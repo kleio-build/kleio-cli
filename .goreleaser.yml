@@ -1,0 +1,101 @@
+# GoReleaser configuration for kleio CLI
+# https://goreleaser.com
+
+version: 2
+
+project_name: kleio
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kleio
+    main: ./cmd/kleio
+    binary: kleio
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/kleio-build/kleio-cli/internal/version.Version={{.Version}}
+      - -X github.com/kleio-build/kleio-cli/internal/version.Commit={{.Commit}}
+      - -X github.com/kleio-build/kleio-cli/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: kleio-build
+    name: kleio-cli
+  prerelease: auto
+  draft: false
+
+brews:
+  - name: kleio
+    repository:
+      owner: kleio-build
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/kleio-build/kleio-cli"
+    description: "Kleio CLI — capture work discovered during development"
+    license: "MIT"
+    skip_upload: false
+    test: |
+      system "#{bin}/kleio", "--version"
+    install: |
+      bin.install "kleio"
+
+scoops:
+  - name: kleio
+    repository:
+      owner: kleio-build
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    homepage: "https://github.com/kleio-build/kleio-cli"
+    description: "Kleio CLI — capture work discovered during development"
+    license: "MIT"
+    skip_upload: false
