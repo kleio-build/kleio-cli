@@ -62,6 +62,45 @@ Download the latest release from [GitHub Releases](https://github.com/kleio-buil
 kleio --version
 ```
 
+## Project bootstrap (`kleio init`)
+
+Templates (AGENTS.md, Cursor rules, Claude stub, skills, config examples) ship inside the CLI. From your repo root:
+
+```bash
+# Default: install recommended profile for this repo (often Cursor-oriented)
+kleio init
+
+# Interactive wizard: tooling, embedded GitHub sign-in + workspace selection, init verify
+kleio init -i
+
+# Profiles: cursor, claude, generic (AGENTS.md only), none (skip files), all (cursor+claude)
+kleio init --tool=cursor
+kleio init --tool=cursor,claude
+
+# CI / automation: no prompts; pass --tool when the repo has no .cursor/.claude/ signals
+kleio init --non-interactive --yes-new-only --tool=cursor
+
+# When a file already exists, init writes a sidecar (e.g. AGENTS.kleio.md, .cursor/mcp.kleio.json.example)
+# unless you confirm overwrite interactively or pass --force-overwrite
+```
+
+After a successful **Init verify**, the CLI prints a one-liner `kleio checkpoint ...` so you can confirm API access. Configure MCP using `.cursor/mcp.json.example` (merge into your Cursor MCP config).
+
+```bash
+kleio config set api-url <url>        # optional
+kleio config set workspace-id <uuid>  # or pick during kleio login / kleio init -i
+kleio config show                     # secrets are redacted
+```
+
+## Configuration check (`kleio status`)
+
+Validates local config, API health, authentication, and workspace-scoped **counts** (`GET /api/workspace/counts`). Prints an informational **MCP** section (never fails the command). Use `--json` to print only the raw workspace counts JSON.
+
+```bash
+kleio status
+kleio status --json
+```
+
 ## CLI usage
 
 ```bash

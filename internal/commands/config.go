@@ -22,7 +22,7 @@ func NewConfigCmd() *cobra.Command {
 func newConfigSetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "set [key] [value]",
-		Short: "Set a config value (api-url, api-key)",
+		Short: "Set a config value (api-url, api-key, workspace-id)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, _ := config.Load()
@@ -32,15 +32,21 @@ func newConfigSetCmd() *cobra.Command {
 				cfg.APIURL = args[1]
 			case "api-key":
 				cfg.APIKey = args[1]
+			case "workspace-id":
+				cfg.WorkspaceID = args[1]
 			default:
-				return fmt.Errorf("unknown config key: %s (valid: api-url, api-key)", args[0])
+				return fmt.Errorf("unknown config key: %s (valid: api-url, api-key, workspace-id)", args[0])
 			}
 
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
 			}
 
-			fmt.Printf("Set %s = %s\n", args[0], args[1])
+			if args[0] == "api-key" {
+				fmt.Printf("Set %s = <redacted>\n", args[0])
+			} else {
+				fmt.Printf("Set %s = %s\n", args[0], args[1])
+			}
 			return nil
 		},
 	}
@@ -52,10 +58,19 @@ func newConfigShowCmd() *cobra.Command {
 		Short: "Show current configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, _ := config.Load()
-			fmt.Printf("api-url: %s\n", cfg.APIURL)
-			fmt.Printf("api-key: %s\n", cfg.APIKey)
-			fmt.Printf("config:  %s\n", config.DefaultPath())
+			fmt.Printf("api-url:       %s\n", cfg.APIURL)
+			fmt.Printf("api-key:       %s\n", redactSecret(cfg.APIKey))
+			fmt.Printf("token:         %s\n", redactSecret(cfg.Token))
+			fmt.Printf("workspace-id:  %s\n", cfg.WorkspaceID)
+			fmt.Printf("config file:   %s\n", config.DefaultPath())
 			return nil
 		},
 	}
+}
+
+func redactSecret(s string) string {
+	if s == "" {
+		return "(empty)"
+	}
+	return "(set, hidden)"
 }

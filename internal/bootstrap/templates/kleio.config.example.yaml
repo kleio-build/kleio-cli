@@ -1,0 +1,6 @@
+# Kleio CLI & MCP — copy to ~/.kleio/config.yaml (or %USERPROFILE%\.kleio\config.yaml on Windows)
+# Used by: kleio CLI, kleio mcp (Cursor MCP server)
+
+api_url: http://localhost:8080
+api_key: REPLACE_ME
+workspace_id: REPLACE_ME

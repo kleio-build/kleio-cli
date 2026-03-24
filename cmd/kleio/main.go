@@ -17,12 +17,8 @@ import (
 )
 
 func main() {
-	var cfg *config.Config
-
 	getClient := func() *client.Client {
-		if cfg == nil {
-			cfg, _ = config.Load()
-		}
+		cfg, _ := config.Load()
 		if cfg.Token != "" {
 			return client.NewWithToken(cfg.APIURL, cfg.Token, cfg.WorkspaceID)
 		}
@@ -45,6 +41,8 @@ func main() {
 	rootCmd.AddCommand(commands.NewLoginCmd(getClient))
 	rootCmd.AddCommand(commands.NewLogoutCmd())
 	rootCmd.AddCommand(commands.NewWorkspaceCmd(getClient))
+	rootCmd.AddCommand(commands.NewInitCmd(getClient))
+	rootCmd.AddCommand(commands.NewStatusCmd(getClient))
 
 	mcpCmd := &cobra.Command{
 		Use:          "mcp",
