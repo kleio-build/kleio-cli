@@ -73,6 +73,19 @@ release:
   prerelease: auto
   draft: false
 
+nfpms:
+  - id: kleio
+    package_name: kleio
+    vendor: kleio-build
+    homepage: "https://github.com/kleio-build/kleio-cli"
+    maintainer: "Kleio <support@kleio.build>"
+    description: "Kleio CLI — capture work discovered during development"
+    license: "MIT"
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+
 brews:
   - name: kleio
     repository:

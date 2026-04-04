@@ -38,6 +38,24 @@ scoop bucket add kleio https://github.com/kleio-build/scoop-bucket
 scoop install kleio
 ```
 
+### APT (Debian / Ubuntu)
+
+Download the `.deb` package from [GitHub Releases](https://github.com/kleio-build/kleio-cli/releases) and install:
+
+```bash
+curl -LO https://github.com/kleio-build/kleio-cli/releases/latest/download/kleio_<version>_linux_amd64.deb
+sudo dpkg -i kleio_<version>_linux_amd64.deb
+```
+
+### RPM (Fedora / RHEL / CentOS)
+
+Download the `.rpm` package from [GitHub Releases](https://github.com/kleio-build/kleio-cli/releases) and install:
+
+```bash
+curl -LO https://github.com/kleio-build/kleio-cli/releases/latest/download/kleio_<version>_linux_amd64.rpm
+sudo rpm -i kleio_<version>_linux_amd64.rpm
+```
+
 ### Go install
 
 ```bash
@@ -56,6 +74,8 @@ Download the latest release from [GitHub Releases](https://github.com/kleio-buil
 | Go install | `go install github.com/kleio-build/kleio-cli/cmd/kleio@latest` |
 | Homebrew | `brew upgrade kleio` |
 | Scoop | `scoop update kleio` |
+| APT (deb) | Download the new `.deb` from [Releases](https://github.com/kleio-build/kleio-cli/releases) and `sudo dpkg -i kleio_*.deb` |
+| RPM | Download the new `.rpm` from [Releases](https://github.com/kleio-build/kleio-cli/releases) and `sudo rpm -U kleio_*.rpm` |
 | Manual | Download the new binary from [Releases](https://github.com/kleio-build/kleio-cli/releases) |
 
 ```bash
@@ -161,7 +181,7 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The pipeline builds binaries for Linux, macOS, and Windows (amd64/arm64 where applicable), publishes a GitHub Release, and updates the [Homebrew tap](https://github.com/kleio-build/homebrew-tap) and [Scoop bucket](https://github.com/kleio-build/scoop-bucket).
+The pipeline builds binaries for Linux, macOS, and Windows (amd64/arm64 where applicable), publishes a GitHub Release with `.deb` and `.rpm` packages for Linux, and updates the [Homebrew tap](https://github.com/kleio-build/homebrew-tap) and [Scoop bucket](https://github.com/kleio-build/scoop-bucket).
 
 **Secrets** on `kleio-build/kleio-cli`: `HOMEBREW_TAP_GITHUB_TOKEN` and `SCOOP_BUCKET_GITHUB_TOKEN` (PATs with push access to those repos).
 
