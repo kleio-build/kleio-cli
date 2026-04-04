@@ -28,19 +28,20 @@ func NewDecideCmd(getClient func() *client.Client) *cobra.Command {
 				content += " " + a
 			}
 
-			structuredData, _ := json.Marshal(map[string]interface{}{
+			sd, _ := json.Marshal(map[string]interface{}{
+				"schema":       "kleio/decision/v1",
 				"alternatives": alternatives,
 				"rationale":    rationale,
 				"confidence":   confidence,
 			})
-			freeform := string(structuredData)
+			sdStr := string(sd)
 
 			input := &client.CaptureInput{
-				Content:         content,
-				SourceType:      "cli",
-				AuthorType:      "human",
-				SignalType:      "decision",
-				FreeformContext: &freeform,
+				Content:        content,
+				SourceType:     "cli",
+				AuthorType:     "human",
+				SignalType:     "decision",
+				StructuredData: &sdStr,
 			}
 			if repo != "" {
 				input.RepoName = &repo

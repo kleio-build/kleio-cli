@@ -268,19 +268,20 @@ func decideHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Cal
 			return errResult("content is required"), TextOutput{}, nil
 		}
 
-		structuredData, _ := json.Marshal(map[string]interface{}{
+		sd, _ := json.Marshal(map[string]interface{}{
+			"schema":       "kleio/decision/v1",
 			"alternatives": input.Alternatives,
 			"rationale":    input.Rationale,
 			"confidence":   input.Confidence,
 		})
-		freeform := string(structuredData)
+		sdStr := string(sd)
 
 		captureInput := &kleioclient.CaptureInput{
-			Content:         input.Content,
-			SourceType:      "agent",
-			AuthorType:      "agent",
-			SignalType:      "decision",
-			FreeformContext: &freeform,
+			Content:        input.Content,
+			SourceType:     "agent",
+			AuthorType:     "agent",
+			SignalType:     "decision",
+			StructuredData: &sdStr,
 		}
 		if input.RepoName != "" {
 			captureInput.RepoName = &input.RepoName
