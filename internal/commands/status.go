@@ -7,6 +7,7 @@ import (
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/config"
+	"github.com/kleio-build/kleio-cli/internal/gitowner"
 	"github.com/kleio-build/kleio-cli/internal/mcpdetect"
 	"github.com/spf13/cobra"
 )
@@ -81,12 +82,14 @@ func NewStatusCmd(getClient func() *client.Client) *cobra.Command {
 				fmt.Println("Auth: ok")
 			}
 
-			ws := strings.TrimSpace(cfg.WorkspaceID)
+			ws := cl.WorkspaceID()
 			if ws == "" {
-				fmt.Println("Workspace: not set (configure workspace_id or kleio workspace)")
+				fmt.Println("Workspace: not set (configure workspace_id, add .kleio/config.yaml, or run kleio workspace)")
 				fmt.Println("Status: not ready")
 				os.Exit(1)
 			}
+			wsSource := workspaceSource(cfg, wd)
+			fmt.Printf("Workspace: %s (%s)\n", ws, wsSource)
 
 			if asJSON {
 				raw, err := cl.GetWorkspaceCountsRaw()
@@ -133,4 +136,22 @@ func NewStatusCmd(getClient func() *client.Client) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print raw JSON for workspace counts response")
 	return cmd
+}
+
+// workspaceSource returns a human-readable label describing how the active
+// workspace was resolved.
+func workspaceSource(cfg *config.Config, wd string) string {
+	if os.Getenv("KLEIO_WORKSPACE_ID") != "" {
+		return "env KLEIO_WORKSPACE_ID"
+	}
+	if strings.TrimSpace(cfg.WorkspaceID) != "" {
+		return "~/.kleio/config.yaml"
+	}
+	if owner := gitowner.DetectOwner(wd); owner != "" {
+		return fmt.Sprintf("auto-detected from git remote (owner: %s)", owner)
+	}
+	if projCfg := config.LoadProject(wd); projCfg != nil && projCfg.WorkspaceID != "" {
+		return "project .kleio/config.yaml"
+	}
+	return "unknown"
 }

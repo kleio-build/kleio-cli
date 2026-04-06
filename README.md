@@ -121,6 +121,35 @@ kleio status
 kleio status --json
 ```
 
+## Workspace resolution
+
+The CLI and MCP server resolve the active workspace using a layered strategy:
+
+| Priority | Source | Description |
+|----------|--------|-------------|
+| 1 | `KLEIO_WORKSPACE_ID` env var | Explicit override, always wins |
+| 2 | Git remote auto-detection | Parses the origin remote URL from `.git/config`, extracts the GitHub owner (e.g. `kleio-build`), and matches it against your workspaces |
+| 3 | Project `.kleio/config.yaml` | Walks up from the current directory looking for `.kleio/config.yaml` with a `workspace_id` field |
+| 4 | `~/.kleio/config.yaml` | Home config set by `kleio login` or `kleio workspace select` |
+
+This means when you `cd` into a `kleio-build/*` repo, captures automatically go to the kleio-build workspace. Switch to a `kalo-build/*` repo and they go to kalo-build -- no manual workspace switching needed.
+
+### Project-level config
+
+For repos where git remote detection doesn't apply (non-GitHub remotes, forks, monorepos), place a `.kleio/config.yaml` in the project root:
+
+```yaml
+workspace_id: "d1234567-..."
+```
+
+Run `kleio status` to verify which source was used:
+
+```
+Workspace: d1234567-... (auto-detected from git remote (owner: kleio-build))
+```
+
+The MCP server resolves the workspace once at startup based on the editor's working directory.
+
 ## CLI usage
 
 ```bash

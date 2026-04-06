@@ -69,6 +69,18 @@ func (c *Client) SetOnTokenRefresh(fn OnTokenRefreshFunc) {
 	c.onTokenRefresh = fn
 }
 
+// SetWorkspaceID overrides the workspace after construction. Used by the
+// workspace resolution chain when the workspace is determined dynamically
+// (e.g. from git remote or project config).
+func (c *Client) SetWorkspaceID(id string) {
+	c.workspaceID = id
+}
+
+// WorkspaceID returns the currently configured workspace ID.
+func (c *Client) WorkspaceID() string {
+	return c.workspaceID
+}
+
 type CaptureInput struct {
 	Content         string   `json:"content"`
 	SourceType      string   `json:"source_type"`

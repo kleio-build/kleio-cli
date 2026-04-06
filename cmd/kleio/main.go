@@ -10,6 +10,7 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/commands"
 	"github.com/kleio-build/kleio-cli/internal/config"
+	"github.com/kleio-build/kleio-cli/internal/gitowner"
 	kleiomcp "github.com/kleio-build/kleio-cli/internal/mcp"
 	"github.com/kleio-build/kleio-cli/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -19,16 +20,21 @@ import (
 func main() {
 	getClient := func() *client.Client {
 		cfg, _ := config.Load()
+		var c *client.Client
 		if cfg.Token != "" {
-			c := client.NewWithTokens(cfg.APIURL, cfg.Token, cfg.RefreshToken, cfg.WorkspaceID)
+			c = client.NewWithTokens(cfg.APIURL, cfg.Token, cfg.RefreshToken, cfg.WorkspaceID)
 			c.SetOnTokenRefresh(func(newToken, newRefreshToken string) {
 				cfg.Token = newToken
 				cfg.RefreshToken = newRefreshToken
 				_ = config.Save(cfg)
 			})
-			return c
+		} else {
+			c = client.New(cfg.APIURL, cfg.APIKey, cfg.WorkspaceID)
 		}
-		return client.New(cfg.APIURL, cfg.APIKey, cfg.WorkspaceID)
+		if cfg.WorkspaceID == "" {
+			resolveWorkspace(c)
+		}
+		return c
 	}
 
 	rootCmd := &cobra.Command{
@@ -69,5 +75,32 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// resolveWorkspace attempts to set the workspace on c when none was configured.
+// Priority: git remote auto-detect > project-level .kleio/config.yaml.
+func resolveWorkspace(c *client.Client) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+
+	// 1. Git remote: match GitHub owner against user's workspaces.
+	if owner := gitowner.DetectOwner(wd); owner != "" {
+		workspaces, err := c.ListWorkspaces()
+		if err == nil {
+			for _, ws := range workspaces {
+				if ws.GitHubOwnerLogin != nil && strings.EqualFold(*ws.GitHubOwnerLogin, owner) {
+					c.SetWorkspaceID(ws.ID)
+					return
+				}
+			}
+		}
+	}
+
+	// 2. Project config: .kleio/config.yaml in project root or ancestor.
+	if projCfg := config.LoadProject(wd); projCfg != nil && projCfg.WorkspaceID != "" {
+		c.SetWorkspaceID(projCfg.WorkspaceID)
 	}
 }

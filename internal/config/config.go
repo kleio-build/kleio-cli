@@ -82,6 +82,29 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// LoadProject walks up from startDir looking for a .kleio/config.yaml file.
+// Returns the parsed config if found (only workspace_id is expected), or nil if
+// no project-level config exists.
+func LoadProject(startDir string) *Config {
+	dir := startDir
+	for {
+		candidate := filepath.Join(dir, ".kleio", "config.yaml")
+		data, err := os.ReadFile(candidate)
+		if err == nil {
+			var cfg Config
+			if yaml.Unmarshal(data, &cfg) == nil && cfg.WorkspaceID != "" {
+				return &cfg
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return nil
+}
+
 func Save(cfg *Config) error {
 	path := DefaultPath()
 	dir := filepath.Dir(path)
