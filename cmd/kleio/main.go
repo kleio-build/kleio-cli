@@ -20,7 +20,13 @@ func main() {
 	getClient := func() *client.Client {
 		cfg, _ := config.Load()
 		if cfg.Token != "" {
-			return client.NewWithToken(cfg.APIURL, cfg.Token, cfg.WorkspaceID)
+			c := client.NewWithTokens(cfg.APIURL, cfg.Token, cfg.RefreshToken, cfg.WorkspaceID)
+			c.SetOnTokenRefresh(func(newToken, newRefreshToken string) {
+				cfg.Token = newToken
+				cfg.RefreshToken = newRefreshToken
+				_ = config.Save(cfg)
+			})
+			return c
 		}
 		return client.New(cfg.APIURL, cfg.APIKey, cfg.WorkspaceID)
 	}

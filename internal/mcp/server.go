@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	kleioclient "github.com/kleio-build/kleio-cli/internal/client"
@@ -160,6 +161,9 @@ func captureHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Ca
 
 		result, err := c.CreateCapture(captureInput)
 		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
 			return errResult("Capture failed: " + err.Error()), TextOutput{}, nil
 		}
 
@@ -251,6 +255,9 @@ func checkpointHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp
 
 		data, err := c.CreateRelationalCapture(reqBody)
 		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
 			return errResult("Checkpoint failed: " + err.Error()), TextOutput{}, nil
 		}
 		pretty := map[string]interface{}{}
@@ -292,6 +299,9 @@ func decideHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Cal
 
 		result, err := c.CreateCapture(captureInput)
 		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
 			return errResult("Decision capture failed: " + err.Error()), TextOutput{}, nil
 		}
 
@@ -326,6 +336,9 @@ func observeHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Ca
 
 		result, err := c.CreateCapture(captureInput)
 		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
 			return errResult("Observation capture failed: " + err.Error()), TextOutput{}, nil
 		}
 
@@ -338,6 +351,9 @@ func backlogListHandler(c *kleioclient.Client) func(ctx context.Context, req *mc
 	return func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
 		items, err := c.ListBacklogItems(input.Status, input.Priority, input.Category, input.Repo)
 		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
 			return errResult("List failed: " + err.Error()), TextOutput{}, nil
 		}
 		data, _ := json.MarshalIndent(items, "", "  ")
@@ -352,6 +368,9 @@ func backlogShowHandler(c *kleioclient.Client) func(ctx context.Context, req *mc
 		}
 		item, err := c.GetBacklogItem(input.ID)
 		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
 			return errResult("Show failed: " + err.Error()), TextOutput{}, nil
 		}
 		data, _ := json.MarshalIndent(item, "", "  ")
@@ -378,12 +397,25 @@ func backlogPrioritizeHandler(c *kleioclient.Client) func(ctx context.Context, r
 
 		item, err := c.UpdateBacklogItem(input.ID, updates)
 		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
 			return errResult("Update failed: " + err.Error()), TextOutput{}, nil
 		}
 
 		data, _ := json.MarshalIndent(item, "", "  ")
 		return nil, TextOutput{Result: string(data)}, nil
 	}
+}
+
+func authErrResult(err error) *mcp.CallToolResult {
+	if errors.Is(err, kleioclient.ErrAuthRequired) {
+		return errResult(kleioclient.ErrAuthRequired.Error())
+	}
+	if strings.Contains(err.Error(), "API error (401)") || strings.Contains(err.Error(), "API error (403)") {
+		return errResult("Authentication required. Run `kleio login` in a terminal to authenticate, then restart the MCP server.")
+	}
+	return nil
 }
 
 func errResult(msg string) *mcp.CallToolResult {

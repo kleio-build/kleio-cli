@@ -7,56 +7,81 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/config"
 )
 
-// RunOAuthLoginFlow runs the same GitHub OAuth + workspace selection flow as `kleio login`,
-// reading the authorization code from r (typically os.Stdin).
+// RunOAuthLoginFlow authenticates via GitHub's Device Authorization Flow
+// (RFC 8628). The user is shown a short code to enter on github.com/login/device.
 func RunOAuthLoginFlow(r *bufio.Reader) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	authURL := cfg.APIURL + "/auth/github"
-	fmt.Printf("Opening browser for GitHub authentication...\n")
-	fmt.Printf("If it doesn't open, visit: %s\n\n", authURL)
-
-	openBrowser(authURL)
-
-	fmt.Print("Paste the authorization code here: ")
-	code, err := r.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return err
-	}
-	code = strings.TrimSpace(code)
-
-	if code == "" {
-		return fmt.Errorf("no code provided")
-	}
-
 	c := client.New(cfg.APIURL, "", "")
-	token, err := c.ExchangeCode(code)
+	deviceCode, err := c.RequestDeviceCode()
 	if err != nil {
-		return fmt.Errorf("authentication failed: %w", err)
+		return fmt.Errorf("failed to request device code: %w", err)
 	}
 
-	cfg.Token = token.AccessToken
-	cfg.RefreshToken = token.RefreshToken
+	fmt.Println("Opening browser to authorize...")
+	fmt.Println()
+	fmt.Printf("  Your code: %s\n", deviceCode.UserCode)
+	fmt.Printf("  Visit:     %s\n", deviceCode.VerificationURI)
+	fmt.Println()
 
-	tokenClient := client.NewWithToken(cfg.APIURL, cfg.Token, "")
-	if err := pickWorkspaceInteractive(cfg, tokenClient, r); err != nil {
-		return err
+	openBrowser(deviceCode.VerificationURI)
+
+	interval := deviceCode.Interval
+	if interval < 5 {
+		interval = 5
 	}
 
-	if err := config.Save(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
+	fmt.Print("Waiting for authorization...")
+	for {
+		time.Sleep(time.Duration(interval) * time.Second)
+		fmt.Print(".")
 
-	fmt.Println("Authentication successful! Config saved to ~/.kleio/config.yaml")
-	return nil
+		result, err := c.PollDeviceToken(deviceCode.DeviceCode)
+		if err != nil {
+			fmt.Println()
+			return fmt.Errorf("polling failed: %w", err)
+		}
+
+		if result.Pending {
+			if result.Interval > 0 {
+				interval = result.Interval
+			}
+			continue
+		}
+
+		if result.Error != "" {
+			fmt.Println()
+			return fmt.Errorf("authorization failed: %s", result.Error)
+		}
+
+		fmt.Println(" done!")
+
+		cfg.Token = result.AccessToken
+		cfg.RefreshToken = result.RefreshToken
+
+		tokenClient := client.NewWithToken(cfg.APIURL, cfg.Token, "")
+		if err := pickWorkspaceInteractive(cfg, tokenClient, r); err != nil {
+			return err
+		}
+
+		if err := config.Save(cfg); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+
+		fmt.Println("Authentication successful! Config saved to ~/.kleio/config.yaml")
+		fmt.Println()
+		fmt.Println("Tip: If the Kleio MCP server is running, restart it to use your new credentials.")
+		return nil
+	}
 }
 
 // PickWorkspaceIfNeeded lists workspaces and sets cfg.WorkspaceID when missing but token is set.

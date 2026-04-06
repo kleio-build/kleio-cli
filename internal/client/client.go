@@ -3,19 +3,32 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
+// ErrAuthRequired is returned when authentication is needed but not configured.
+var ErrAuthRequired = errors.New("authentication required: run `kleio login` to authenticate, then restart the MCP server")
+
+// OnTokenRefreshFunc is called after a successful token refresh so callers
+// (e.g. the MCP server) can persist the new tokens.
+type OnTokenRefreshFunc func(newToken, newRefreshToken string)
+
 type Client struct {
-	baseURL     string
-	apiKey      string
-	token       string
-	workspaceID string
-	httpClient  *http.Client
+	baseURL      string
+	apiKey       string
+	token        string
+	refreshToken string
+	workspaceID  string
+	httpClient   *http.Client
+
+	refreshMu      sync.Mutex
+	onTokenRefresh OnTokenRefreshFunc
 }
 
 // New creates a client that uses X-API-Key auth. workspaceID is sent on every request
@@ -36,6 +49,24 @@ func NewWithToken(baseURL, token, workspaceID string) *Client {
 		workspaceID: workspaceID,
 		httpClient:  &http.Client{},
 	}
+}
+
+// NewWithTokens creates a client with both access and refresh tokens, enabling
+// automatic token refresh on 401 responses.
+func NewWithTokens(baseURL, token, refreshToken, workspaceID string) *Client {
+	return &Client{
+		baseURL:      baseURL,
+		token:        token,
+		refreshToken: refreshToken,
+		workspaceID:  workspaceID,
+		httpClient:   &http.Client{},
+	}
+}
+
+// SetOnTokenRefresh registers a callback invoked after a successful token
+// refresh. Use this to persist new tokens to disk.
+func (c *Client) SetOnTokenRefresh(fn OnTokenRefreshFunc) {
+	c.onTokenRefresh = fn
 }
 
 type CaptureInput struct {
@@ -89,6 +120,79 @@ type Workspace struct {
 	Slug             string  `json:"slug"`
 	GitHubOwnerLogin *string `json:"git_hub_owner_login"`
 	Plan             string  `json:"plan"`
+}
+
+type DeviceCodeResponse struct {
+	DeviceCode      string `json:"device_code"`
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	ExpiresIn       int    `json:"expires_in"`
+	Interval        int    `json:"interval"`
+}
+
+// DeviceTokenResult wraps the API response for device token polling. Pending is
+// true while the user hasn't authorized yet; check Error for terminal failures.
+type DeviceTokenResult struct {
+	TokenResponse
+	Pending  bool   `json:"-"`
+	Error    string `json:"error,omitempty"`
+	Interval int    `json:"interval,omitempty"`
+}
+
+func (c *Client) RequestDeviceCode() (*DeviceCodeResponse, error) {
+	resp, err := c.doRequestRaw("POST", "/auth/device/code", nil)
+	if err != nil {
+		return nil, err
+	}
+	var result DeviceCodeResponse
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse device code response: %w", err)
+	}
+	return &result, nil
+}
+
+// PollDeviceToken polls the API for device flow completion. Returns a result
+// with Pending=true if the user hasn't authorized yet.
+func (c *Client) PollDeviceToken(deviceCode string) (*DeviceTokenResult, error) {
+	body, _ := json.Marshal(map[string]string{"device_code": deviceCode})
+
+	req, err := http.NewRequest("POST", c.baseURL+"/auth/device/token", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusAccepted {
+		var result DeviceTokenResult
+		json.Unmarshal(respBody, &result)
+		result.Pending = true
+		return &result, nil
+	}
+
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		json.Unmarshal(respBody, &errResp)
+		return &DeviceTokenResult{Error: errResp.Error}, nil
+	}
+
+	var result DeviceTokenResult
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+	return &result, nil
 }
 
 func (c *Client) ExchangeCode(code string) (*TokenResponse, error) {
@@ -216,7 +320,8 @@ func (c *Client) UpdateBacklogItem(id string, updates map[string]interface{}) (*
 	return &wrapper.Data, nil
 }
 
-func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
+// doRequestRaw performs an HTTP request without auth headers or auto-refresh.
+func (c *Client) doRequestRaw(method, path string, body []byte) ([]byte, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -227,16 +332,6 @@ func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	} else if c.apiKey != "" {
-		req.Header.Set("X-API-Key", c.apiKey)
-	}
-
-	if c.workspaceID != "" {
-		req.Header.Set("X-Workspace-ID", c.workspaceID)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -254,4 +349,95 @@ func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
 	}
 
 	return respBody, nil
+}
+
+func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
+	respBody, statusCode, err := c.doRequestOnce(method, path, body)
+	if err != nil {
+		return nil, err
+	}
+
+	if statusCode == http.StatusUnauthorized && c.refreshToken != "" {
+		if refreshErr := c.tryRefresh(); refreshErr == nil {
+			respBody, statusCode, err = c.doRequestOnce(method, path, body)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if statusCode == http.StatusUnauthorized {
+		return nil, ErrAuthRequired
+	}
+
+	if statusCode >= 400 {
+		return nil, fmt.Errorf("API error (%d): %s", statusCode, string(respBody))
+	}
+
+	return respBody, nil
+}
+
+func (c *Client) doRequestOnce(method, path string, body []byte) ([]byte, int, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	} else if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+
+	if c.workspaceID != "" {
+		req.Header.Set("X-Workspace-ID", c.workspaceID)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	return respBody, resp.StatusCode, nil
+}
+
+func (c *Client) tryRefresh() error {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	if c.refreshToken == "" {
+		return fmt.Errorf("no refresh token")
+	}
+
+	body, _ := json.Marshal(map[string]string{"refresh_token": c.refreshToken})
+	resp, err := c.doRequestRaw("POST", "/auth/refresh", body)
+	if err != nil {
+		return err
+	}
+
+	var tokens TokenResponse
+	if err := json.Unmarshal(resp, &tokens); err != nil {
+		return err
+	}
+
+	c.token = tokens.AccessToken
+	c.refreshToken = tokens.RefreshToken
+
+	if c.onTokenRefresh != nil {
+		c.onTokenRefresh(tokens.AccessToken, tokens.RefreshToken)
+	}
+
+	return nil
 }
