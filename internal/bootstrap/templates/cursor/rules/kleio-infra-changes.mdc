@@ -1,0 +1,6 @@
+---
+description: Remind about Kleio logging when editing infrastructure, deployment, or dependency config
+globs: "**/terraform/**,**/pulumi/**,**/.github/**,**/cloudbuild*,**/Dockerfile*,**/docker-compose*,**/*.tf,**/k8s/**,**/kubernetes/**,**/helm/**,**/package.json,**/go.mod,**/pyproject.toml,**/Cargo.toml,**/ci/**,**/.gitlab-ci*"
+---
+
+You are editing infrastructure, deployment, or dependency config. If this changes deployment topology, CI/CD behavior, dependency strategy, or container setup, log a decision with `kleio_decide`.

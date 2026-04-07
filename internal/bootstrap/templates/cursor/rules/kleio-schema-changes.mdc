@@ -1,0 +1,6 @@
+---
+description: Remind about Kleio logging when editing schema, model, or data definition files
+globs: "**/migrations/**,**/database/**,**/*.proto,**/*.graphql,**/*.prisma,**/openapi*.yaml,**/openapi*.json,**/swagger*.yaml,**/swagger*.json"
+---
+
+You are editing schema or data definition files. If this introduces a non-trivial schema change, log a decision with `kleio_decide` (what changed and why). After implementation, record a checkpoint with `kleio_checkpoint`.

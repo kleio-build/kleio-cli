@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	kleioclient "github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/version"
@@ -12,12 +15,12 @@ import (
 )
 
 type CaptureInput struct {
-	Content         string `json:"content" jsonschema:"The work item text to capture"`
+	Content         string `json:"content" jsonschema:"The work item text to capture (max 4000 chars)"`
 	RepoName        string `json:"repo_name,omitempty" jsonschema:"Repository name"`
 	BranchName      string `json:"branch_name,omitempty" jsonschema:"Branch name"`
 	FilePath        string `json:"file_path,omitempty" jsonschema:"Relevant file path"`
 	LineStart       int    `json:"line_start,omitempty" jsonschema:"Start line number"`
-	FreeformContext string `json:"freeform_context,omitempty" jsonschema:"Additional context"`
+	FreeformContext string `json:"freeform_context,omitempty" jsonschema:"Additional context (max 8000 chars)"`
 	AuthorType      string `json:"author_type,omitempty" jsonschema:"Who is capturing: human or agent"`
 	SignalType      string `json:"signal_type,omitempty" jsonschema:"work_item (default, creates backlog) or observation (stored only, no backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead"`
 }
@@ -73,27 +76,80 @@ type BacklogPrioritizeInput struct {
 	Status   string `json:"status,omitempty" jsonschema:"New status (new, reviewed, ready, done, ignored)"`
 }
 
+type SessionSummaryInput struct{}
+
 type TextOutput struct {
 	Result string `json:"result"`
 }
 
+type sessionState struct {
+	mu        sync.Mutex
+	startedAt time.Time
+	toolCalls map[string]int
+}
+
+func newSessionState() *sessionState {
+	return &sessionState{
+		startedAt: time.Now(),
+		toolCalls: make(map[string]int),
+	}
+}
+
+func (s *sessionState) record(toolName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolCalls[toolName]++
+}
+
+func (s *sessionState) tally() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	captures := s.toolCalls["kleio_capture"]
+	decisions := s.toolCalls["kleio_decide"]
+	checkpoints := s.toolCalls["kleio_checkpoint"]
+	return fmt.Sprintf("Session: %d captures, %d decisions, %d checkpoints.", captures, decisions, checkpoints)
+}
+
+const kleioInstructions = `Kleio records durable engineering signals. You have three write tools:
+
+1. kleio_capture — smart capture path. Use signal_type=work_item (default) for actionable follow-up work (bugs, debt, feature gaps) — only work_item creates backlog items. Use signal_type=observation for non-actionable patterns or smells (stored without backlog synthesis). Do NOT use signal_type=checkpoint or decision here; the API rejects them.
+
+2. kleio_decide — relational decision path. Call when you commit to a direction after comparing alternatives. Required: content, rationale, confidence (low/medium/high). Include alternatives when they exist.
+
+3. kleio_checkpoint — relational checkpoint path. Record what was implemented in a meaningful slice: validation status, files changed, optional caveats/deferred. Required: content, slice_category, slice_status, validation_status.
+
+Read tools: kleio_backlog_list, kleio_backlog_show, kleio_backlog_prioritize.
+
+RULES:
+- If you choose a non-trivial direction, log it with kleio_decide BEFORE implementing.
+- If you discover follow-up work, log it with kleio_capture.
+- After completing a meaningful implementation slice, log it with kleio_checkpoint.
+- Before finishing any non-trivial task, verify that required Kleio records were created.
+- A change is non-trivial if it changes schema, API shape, architecture, cross-file control flow, generation strategy, or introduces a meaningful tradeoff.
+- Do not spam — batch related findings, skip trivial refactors and one-off typos.
+- Check kleio_backlog_list before creating work items that might already exist.`
+
 func NewServer(apiClient *kleioclient.Client) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "kleio-mcp", Version: version.Version}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "kleio-mcp", Version: version.Version}, &mcp.ServerOptions{
+		Instructions: kleioInstructions,
+	})
+
+	session := newSessionState()
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_capture",
 		Description: "Smart capture path: POST /api/captures/smart. Use signal_type work_item (default, creates/links backlog) or observation (stored only, no backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead.",
-	}, captureHandler(apiClient))
+	}, captureHandler(apiClient, session))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_checkpoint",
 		Description: "Relational checkpoint path: POST /api/captures with nested checkpoint (implementation summary, provenance). Not for backlog synthesis. Required: content, slice_category, slice_status, validation_status.",
-	}, checkpointHandler(apiClient))
+	}, checkpointHandler(apiClient, session))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_decide",
 		Description: "Relational decision path: POST /api/captures with nested decision (alternatives, rationale, confidence). Decisions are the fastest-decaying, highest-value signal. Required: content, rationale, confidence.",
-	}, decideHandler(apiClient))
+	}, decideHandler(apiClient, session))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_list",
@@ -110,10 +166,15 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 		Description: "Update the priority and/or status of a backlog item.",
 	}, backlogPrioritizeHandler(apiClient))
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "kleio_session_summary",
+		Description: "Show what Kleio signals have been logged this session. Call at natural breakpoints to check your logging behavior.",
+	}, sessionSummaryHandler(apiClient, session))
+
 	return s
 }
 
-func captureHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input CaptureInput) (*mcp.CallToolResult, TextOutput, error) {
+func captureHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input CaptureInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CaptureInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.Content == "" {
 			return errResult("content is required"), TextOutput{}, nil
@@ -160,12 +221,13 @@ func captureHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Ca
 			return errResult("Capture failed: " + err.Error()), TextOutput{}, nil
 		}
 
+		session.record("kleio_capture")
 		data, _ := json.MarshalIndent(result, "", "  ")
-		return nil, TextOutput{Result: string(data)}, nil
+		return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
 	}
 }
 
-func checkpointHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input CheckpointInput) (*mcp.CallToolResult, TextOutput, error) {
+func checkpointHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input CheckpointInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CheckpointInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.Content == "" {
 			return errResult("content is required"), TextOutput{}, nil
@@ -253,16 +315,17 @@ func checkpointHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp
 			}
 			return errResult("Checkpoint failed: " + err.Error()), TextOutput{}, nil
 		}
+		session.record("kleio_checkpoint")
 		pretty := map[string]interface{}{}
 		if err := json.Unmarshal(data, &pretty); err != nil {
-			return nil, TextOutput{Result: string(data)}, nil
+			return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
 		}
 		out, _ := json.MarshalIndent(pretty, "", "  ")
-		return nil, TextOutput{Result: string(out)}, nil
+		return nil, TextOutput{Result: string(out) + "\n" + session.tally()}, nil
 	}
 }
 
-func decideHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input DecideInput) (*mcp.CallToolResult, TextOutput, error) {
+func decideHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input DecideInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input DecideInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.Content == "" {
 			return errResult("content is required"), TextOutput{}, nil
@@ -317,12 +380,13 @@ func decideHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Cal
 			}
 			return errResult("Decision failed: " + err.Error()), TextOutput{}, nil
 		}
+		session.record("kleio_decide")
 		pretty := map[string]interface{}{}
 		if err := json.Unmarshal(data, &pretty); err != nil {
-			return nil, TextOutput{Result: string(data)}, nil
+			return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
 		}
 		out, _ := json.MarshalIndent(pretty, "", "  ")
-		return nil, TextOutput{Result: string(out)}, nil
+		return nil, TextOutput{Result: string(out) + "\n" + session.tally()}, nil
 	}
 }
 
@@ -385,6 +449,63 @@ func backlogPrioritizeHandler(c *kleioclient.Client) func(ctx context.Context, r
 		data, _ := json.MarshalIndent(item, "", "  ")
 		return nil, TextOutput{Result: string(data)}, nil
 	}
+}
+
+func sessionSummaryHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input SessionSummaryInput) (*mcp.CallToolResult, TextOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input SessionSummaryInput) (*mcp.CallToolResult, TextOutput, error) {
+		session.mu.Lock()
+		startedAt := session.startedAt
+		captures := session.toolCalls["kleio_capture"]
+		decisions := session.toolCalls["kleio_decide"]
+		checkpoints := session.toolCalls["kleio_checkpoint"]
+		session.mu.Unlock()
+
+		duration := time.Since(startedAt).Truncate(time.Second)
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Session duration: %s\n", duration))
+		sb.WriteString(fmt.Sprintf("Tool calls: %d captures, %d decisions, %d checkpoints\n", captures, decisions, checkpoints))
+
+		apiCaptures, err := c.ListCaptures(kleioclient.ListCapturesOptions{
+			CreatedAfter: startedAt.Format(time.RFC3339),
+			AuthorType:   "agent",
+		})
+		if err == nil && len(apiCaptures) > 0 {
+			sb.WriteString(fmt.Sprintf("\nCaptures logged this session (%d):\n", len(apiCaptures)))
+			for _, cap := range apiCaptures {
+				label := cap.SignalType
+				if label == "" {
+					label = "capture"
+				}
+				sb.WriteString(fmt.Sprintf("  - [%s] %s\n", label, truncate(cap.Content, 120)))
+			}
+		} else if err == nil {
+			sb.WriteString("\nNo captures logged this session.\n")
+		}
+
+		var nudges []string
+		if decisions == 0 {
+			nudges = append(nudges, "No decisions logged this session. If you chose a direction, consider calling kleio_decide.")
+		}
+		if checkpoints == 0 {
+			nudges = append(nudges, "No checkpoints logged this session. If you completed an implementation slice, consider calling kleio_checkpoint.")
+		}
+		if len(nudges) > 0 {
+			sb.WriteString("\n")
+			for _, n := range nudges {
+				sb.WriteString(n + "\n")
+			}
+		}
+
+		return nil, TextOutput{Result: sb.String()}, nil
+	}
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
 
 func authErrResult(err error) *mcp.CallToolResult {

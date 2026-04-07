@@ -85,6 +85,9 @@ Use when a **meaningful slice of implementation** is complete and worth recordin
 
 Prefer **structured** fields (`slice_category`, `slice_status`, `validation_status`, `summary_what_changed`, …) over dumping long prose into `content`.
 
+### `kleio_session_summary`
+Call at natural breakpoints to check your logging behavior for the current session. Returns tool call tallies, captures logged, and nudges if decisions or checkpoints are missing.
+
 ### `kleio_backlog_list` / `kleio_backlog_show`
 Use before creating a new durable work item if there is a meaningful chance it already exists.
 

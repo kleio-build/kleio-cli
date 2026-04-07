@@ -1,0 +1,6 @@
+---
+description: Remind about Kleio logging when editing API handlers, routes, or service logic
+globs: "**/routes/**,**/handlers/**,**/controllers/**,**/services/**,**/middleware/**,**/resolvers/**"
+---
+
+You are editing API/service code. If this changes request/response semantics, public API shape, or cross-service control flow, consider logging with `kleio_decide` or `kleio_capture`.

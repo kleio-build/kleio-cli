@@ -42,6 +42,10 @@ Use the **Kleio** MCP server when work produces something worth remembering beyo
 
 Decisions are stored as first-class relational data (queryable columns, not JSON blobs). Call **before** moving on to large implementation that would be expensive to unwind.
 
+### `kleio_session_summary` — self-check
+
+Call at natural breakpoints (before finishing a task, after a long implementation stretch) to see what Kleio signals you've logged this session. Returns tool call tallies and captures, with nudges when decisions or checkpoints are missing.
+
 ### Backlog tools — read and triage
 
 - **`kleio_backlog_list`:** Before proposing duplicate work, or when the user asks what is already tracked—list with filters (`status`, `priority`, `category`, `repo`) as needed.

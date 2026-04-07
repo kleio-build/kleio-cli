@@ -106,6 +106,22 @@ type CaptureResult struct {
 	DedupeConfidence  float64 `json:"dedupe_confidence"`
 }
 
+type CaptureListItem struct {
+	ID           string  `json:"id"`
+	Content      string  `json:"content"`
+	SignalType   string  `json:"signal_type"`
+	AuthorType   string  `json:"author_type"`
+	RepoName     *string `json:"repo_name"`
+	CreatedAt    string  `json:"created_at"`
+	WorkspaceID  string  `json:"workspace_id"`
+}
+
+type ListCapturesOptions struct {
+	CreatedAfter string
+	AuthorType   string
+	SignalType   string
+}
+
 type BacklogItem struct {
 	ID               string   `json:"id"`
 	Title            string   `json:"title"`
@@ -261,6 +277,37 @@ func (c *Client) CreateCapture(input *CaptureInput) (*CaptureResult, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 	return &wrapper.Data, nil
+}
+
+func (c *Client) ListCaptures(opts ListCapturesOptions) ([]CaptureListItem, error) {
+	params := url.Values{}
+	if opts.CreatedAfter != "" {
+		params.Set("created_after", opts.CreatedAfter)
+	}
+	if opts.AuthorType != "" {
+		params.Set("author_type", opts.AuthorType)
+	}
+	if opts.SignalType != "" {
+		params.Set("signal_type", opts.SignalType)
+	}
+
+	path := "/api/captures"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapper struct {
+		Data []CaptureListItem `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return wrapper.Data, nil
 }
 
 func (c *Client) ListBacklogItems(status, priority, category, repo string) ([]BacklogItem, error) {
