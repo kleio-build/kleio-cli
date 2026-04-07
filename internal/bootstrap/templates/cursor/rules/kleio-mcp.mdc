@@ -5,17 +5,18 @@ alwaysApply: true
 
 ## Kleio MCP — when to call which tool
 
-Use the **Kleio** MCP server when work produces something worth remembering beyond this chat: backlog items, decisions, lightweight observations, or backlog triage. Prefer Kleio over only leaving notes in the reply.
+Use the **Kleio** MCP server when work produces something worth remembering beyond this chat: backlog items, decisions, or backlog triage. Prefer Kleio over only leaving notes in the reply.
 
 **Threshold:** Act when the outcome would still matter in ~3 months (architecture, dependencies, security, data model, public API shape, operational constraints). Skip trivial refactors and one-off typos unless the user asks to capture them.
 
-### `kleio_capture` — smart backlog path (not checkpoints)
+### `kleio_capture` — smart backlog path
 
 **Uses `POST /api/captures/smart`**: backlog synthesis and dedupe. Call when you discover **actionable** work: bugs, tech debt with a clear next step, feature gaps, test gaps worth tracking, follow-ups the team should schedule.
 
 - Set `content` to a concrete, self-contained summary (what is wrong / what to build).
-- Set `signal_type` to `work_item` (default) for normal backlog-style items, or `observation` / `weak_signal` when appropriate.
-- **Never** set `signal_type` to `checkpoint` here—the tool and API reject it. Use **`kleio_checkpoint`** for checkpoints.
+- Set `signal_type` to `work_item` (default) for backlog-style items. Only `work_item` creates/links a backlog item.
+- Set `signal_type` to `observation` for non-actionable signals (patterns, smells, hypotheses). These are stored as captures without creating backlog items.
+- **Never** set `signal_type` to `checkpoint` or `decision` here—the tool and API reject them. Use **`kleio_checkpoint`** for checkpoints and **`kleio_decide`** for decisions.
 - Include `repo_name`, `branch_name`, `file_path`, and `line_start` when known so signals stay grounded.
 - Set `author_type` to `agent` when the agent is submitting.
 - Use `freeform_context` for extra detail (repro steps, error text, links) without stuffing the title.
@@ -29,23 +30,17 @@ Use the **Kleio** MCP server when work produces something worth remembering beyo
 - Prefer **structured** fields over long unstructured blobs.
 - Do **not** use for trivial edits, in-slice intermediate steps, speculative unimplemented work, decisions (`kleio_decide`), or backlog follow-ups (`kleio_capture`).
 
-### `kleio_observe` — not actionable yet
+### `kleio_decide` — settled choices among real options (relational)
 
-Call for **patterns, smells, hypotheses, weak signals** that do not deserve a full work item yet (performance drift suspicions, inconsistent patterns, “we should watch this”).
-
-- Prefer **`kleio_observe`** for pure observations. Use **`kleio_capture`** with `signal_type` `observation` or `weak_signal` only when you want capture plus synthesis into backlog behavior—follow `AGENTS.md` if it prescribes one path.
-
-### `kleio_decide` — settled choices among real options
-
-Call when you **commit to** an approach after comparing alternatives: framework/library, auth model, storage strategy, major API design, deployment topology, etc.
+**Uses `POST /api/captures`** with a nested `decision` object containing `alternatives`, `rationale`, and `confidence`. Call when you **commit to** an approach after comparing alternatives: framework/library, auth model, storage strategy, major API design, deployment topology, etc.
 
 - **`content`:** the decision in one clear sentence.
 - **`alternatives`:** other serious options considered (not strawmen).
-- **`rationale`:** why this option wins for *this* codebase, team, and constraints.
-- **`confidence`:** `low`, `medium`, or `high`.
+- **`rationale`:** why this option wins for *this* codebase, team, and constraints (required).
+- **`confidence`:** `low`, `medium`, or `high` (required).
 - Set **`repo_name`** and **`file_path`** if an ADR or design doc exists or will exist.
 
-Call **before** moving on to large implementation that would be expensive to unwind.
+Decisions are stored as first-class relational data (queryable columns, not JSON blobs). Call **before** moving on to large implementation that would be expensive to unwind.
 
 ### Backlog tools — read and triage
 

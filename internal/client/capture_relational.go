@@ -8,6 +8,9 @@ import (
 // SmartCaptureCheckpointRejectedMessage must match kleio-app api/internal/services.SmartCaptureCheckpointRejectedMessage.
 const SmartCaptureCheckpointRejectedMessage = "signal_type checkpoint cannot use POST /api/captures/smart; use POST /api/captures with a nested checkpoint object, or the `kleio checkpoint` command / MCP tool `kleio_checkpoint`"
 
+// SmartCaptureDecisionRejectedMessage must match kleio-app api/internal/services.SmartCaptureDecisionRejectedMessage.
+const SmartCaptureDecisionRejectedMessage = "signal_type decision cannot use POST /api/captures/smart; use POST /api/captures with a nested decision object, or the `kleio decide` command / MCP tool `kleio_decide`"
+
 // RelationalCaptureCreateRequest is the JSON body for POST /api/captures (nested checkpoint, targets, topics).
 // Field names match api/internal/services/capture_metadata.go (CaptureWriteBody).
 type RelationalCaptureCreateRequest struct {
@@ -31,6 +34,14 @@ type RelationalCaptureCreateRequest struct {
 	Targets         []CaptureTargetWrite `json:"targets,omitempty"`
 	Topics          []string             `json:"topics,omitempty"`
 	Checkpoint      *CheckpointWrite     `json:"checkpoint,omitempty"`
+	Decision        *DecisionWrite       `json:"decision,omitempty"`
+}
+
+// DecisionWrite matches api/services.CaptureDecisionWrite JSON tags.
+type DecisionWrite struct {
+	Alternatives []string `json:"alternatives"`
+	Rationale    string   `json:"rationale"`
+	Confidence   string   `json:"confidence"`
 }
 
 // CaptureTargetWrite is one target row (api/services.CaptureTargetWrite).

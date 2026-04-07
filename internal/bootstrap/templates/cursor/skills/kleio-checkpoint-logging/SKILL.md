@@ -25,7 +25,7 @@ Structured fields (required): `slice_category`, `slice_status`, `validation_stat
 
 - Trivial edits only.
 - Intermediate steps inside the same slice (do not checkpoint every commit).
-- Speculative or unimplemented work (use `kleio_observe` or nothing).
+- Speculative or unimplemented work (use `kleio_capture` with `signal_type=observation` or skip).
 - Actionable follow-up work (use `kleio_capture` / smart path).
 - Settled engineering choices among options (use `kleio_decide`).
 

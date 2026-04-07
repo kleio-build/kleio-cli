@@ -11,6 +11,10 @@ A plan is not a decision log.
 
 Use `kleio_decide` once a non-trivial engineering direction is chosen, before moving on with implementation.
 
+## How it works
+
+`kleio_decide` uses the **relational capture path** (`POST /api/captures` with a nested `decision` object). Decisions are stored as first-class relational data with structured, queryable columns — not JSON blobs in `structured_data`.
+
 ## Trigger conditions
 
 Call `kleio_decide` when any of the following is true:
@@ -20,7 +24,7 @@ Call `kleio_decide` when any of the following is true:
 - a design thread concludes with a real decision
 - implementation is about to proceed on a meaningful architectural, schema, API, persistence, or generation choice
 
-Do not wait for a perfect “closure moment” if the implementation is already proceeding based on a chosen direction.
+Do not wait for a perfect "closure moment" if the implementation is already proceeding based on a chosen direction.
 
 ## Do not skip for these categories
 
@@ -43,8 +47,8 @@ Send:
 
 - `content`: one sentence stating the chosen direction
 - `alternatives`: serious options considered
-- `rationale`: why this option fits the codebase and constraints
-- `confidence`: `low`, `medium`, or `high`
+- `rationale`: why this option fits the codebase and constraints (required)
+- `confidence`: `low`, `medium`, or `high` (required)
 
 Include `repo_name` and `file_path` when known.
 

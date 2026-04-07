@@ -19,7 +19,7 @@ type CaptureInput struct {
 	LineStart       int    `json:"line_start,omitempty" jsonschema:"Start line number"`
 	FreeformContext string `json:"freeform_context,omitempty" jsonschema:"Additional context"`
 	AuthorType      string `json:"author_type,omitempty" jsonschema:"Who is capturing: human or agent"`
-	SignalType      string `json:"signal_type,omitempty" jsonschema:"Smart/backlog path only: work_item, observation, weak_signal, or decision-style via other tools. Do not use checkpoint here — use kleio_checkpoint instead"`
+	SignalType      string `json:"signal_type,omitempty" jsonschema:"work_item (default, creates backlog) or observation (stored only, no backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead"`
 }
 
 // CheckpointInput is the relational checkpoint path (POST /api/captures). Field names match the API checkpoint object.
@@ -46,19 +46,14 @@ type CheckpointInput struct {
 }
 
 type DecideInput struct {
-	Content      string   `json:"content" jsonschema:"The decision that was made"`
+	Content      string   `json:"content" jsonschema:"Short capture line summarizing the decision (required)"`
 	Alternatives []string `json:"alternatives,omitempty" jsonschema:"Alternative options that were considered"`
-	Rationale    string   `json:"rationale,omitempty" jsonschema:"Why this decision was made"`
-	Confidence   string   `json:"confidence,omitempty" jsonschema:"Confidence level: low, medium, high"`
+	Rationale    string   `json:"rationale" jsonschema:"Why this decision was made (required)"`
+	Confidence   string   `json:"confidence" jsonschema:"Confidence level: low, medium, or high (required)"`
 	RepoName     string   `json:"repo_name,omitempty" jsonschema:"Repository name"`
+	BranchName   string   `json:"branch_name,omitempty" jsonschema:"Branch name"`
 	FilePath     string   `json:"file_path,omitempty" jsonschema:"Relevant file path (e.g. ADR document)"`
-}
-
-type ObserveInput struct {
-	Content    string `json:"content" jsonschema:"The observation or weak signal to record"`
-	RepoName   string `json:"repo_name,omitempty" jsonschema:"Repository name"`
-	FilePath   string `json:"file_path,omitempty" jsonschema:"Relevant file path"`
-	SignalType string `json:"signal_type,omitempty" jsonschema:"Signal type: observation or weak_signal (default: observation)"`
+	AuthorType   string   `json:"author_type,omitempty" jsonschema:"human or agent"`
 }
 
 type BacklogListInput struct {
@@ -87,7 +82,7 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_capture",
-		Description: "Smart/backlog path only: POST /api/captures/smart. Captures a work item and synthesizes backlog with dedup. Use signal_type work_item, observation, or weak_signal. Do NOT use signal_type checkpoint — use kleio_checkpoint for relational checkpoints.",
+		Description: "Smart capture path: POST /api/captures/smart. Use signal_type work_item (default, creates/links backlog) or observation (stored only, no backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead.",
 	}, captureHandler(apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -97,13 +92,8 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_decide",
-		Description: "Log an engineering decision with alternatives and rationale. Decisions are the fastest-decaying, highest-value signal -- six months later, nobody remembers WHY approach A was chosen over B.",
+		Description: "Relational decision path: POST /api/captures with nested decision (alternatives, rationale, confidence). Decisions are the fastest-decaying, highest-value signal. Required: content, rationale, confidence.",
 	}, decideHandler(apiClient))
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "kleio_observe",
-		Description: "Record an observation or weak signal. Use for things noticed during development that don't rise to a work item yet -- patterns, smells, potential issues.",
-	}, observeHandler(apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_list",
@@ -130,6 +120,9 @@ func captureHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Ca
 		}
 		if strings.EqualFold(strings.TrimSpace(input.SignalType), "checkpoint") {
 			return errResult(kleioclient.SmartCaptureCheckpointRejectedMessage), TextOutput{}, nil
+		}
+		if strings.EqualFold(strings.TrimSpace(input.SignalType), "decision") {
+			return errResult(kleioclient.SmartCaptureDecisionRejectedMessage), TextOutput{}, nil
 		}
 
 		captureInput := &kleioclient.CaptureInput{
@@ -274,76 +267,62 @@ func decideHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.Cal
 		if input.Content == "" {
 			return errResult("content is required"), TextOutput{}, nil
 		}
-
-		sd, _ := json.Marshal(map[string]interface{}{
-			"schema":       "kleio/decision/v1",
-			"alternatives": input.Alternatives,
-			"rationale":    input.Rationale,
-			"confidence":   input.Confidence,
-		})
-		sdStr := string(sd)
-
-		captureInput := &kleioclient.CaptureInput{
-			Content:        input.Content,
-			SourceType:     "agent",
-			AuthorType:     "agent",
-			SignalType:     "decision",
-			StructuredData: &sdStr,
+		if strings.TrimSpace(input.Rationale) == "" {
+			return errResult("rationale is required"), TextOutput{}, nil
 		}
-		if input.RepoName != "" {
-			captureInput.RepoName = &input.RepoName
+		conf := strings.TrimSpace(input.Confidence)
+		if conf == "" {
+			conf = "medium"
 		}
-		if input.FilePath != "" {
-			captureInput.FilePath = &input.FilePath
+		switch conf {
+		case "low", "medium", "high":
+		default:
+			return errResult("confidence must be low, medium, or high"), TextOutput{}, nil
 		}
 
-		result, err := c.CreateCapture(captureInput)
-		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
-			}
-			return errResult("Decision capture failed: " + err.Error()), TextOutput{}, nil
+		alts := input.Alternatives
+		if alts == nil {
+			alts = []string{}
 		}
 
-		data, _ := json.MarshalIndent(result, "", "  ")
-		return nil, TextOutput{Result: string(data)}, nil
-	}
-}
-
-func observeHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input ObserveInput) (*mcp.CallToolResult, TextOutput, error) {
-	return func(ctx context.Context, req *mcp.CallToolRequest, input ObserveInput) (*mcp.CallToolResult, TextOutput, error) {
-		if input.Content == "" {
-			return errResult("content is required"), TextOutput{}, nil
+		author := "agent"
+		if input.AuthorType != "" {
+			author = input.AuthorType
 		}
 
-		signalType := "observation"
-		if input.SignalType == "weak_signal" {
-			signalType = "weak_signal"
-		}
-
-		captureInput := &kleioclient.CaptureInput{
-			Content:    input.Content,
+		reqBody := &kleioclient.RelationalCaptureCreateRequest{
+			AuthorType: author,
 			SourceType: "agent",
-			AuthorType: "agent",
-			SignalType: signalType,
+			Content:    input.Content,
+			Decision: &kleioclient.DecisionWrite{
+				Alternatives: alts,
+				Rationale:    input.Rationale,
+				Confidence:   conf,
+			},
 		}
 		if input.RepoName != "" {
-			captureInput.RepoName = &input.RepoName
+			reqBody.RepoName = &input.RepoName
+		}
+		if input.BranchName != "" {
+			reqBody.BranchName = &input.BranchName
 		}
 		if input.FilePath != "" {
-			captureInput.FilePath = &input.FilePath
+			reqBody.FilePath = &input.FilePath
 		}
 
-		result, err := c.CreateCapture(captureInput)
+		data, err := c.CreateRelationalCapture(reqBody)
 		if err != nil {
 			if r := authErrResult(err); r != nil {
 				return r, TextOutput{}, nil
 			}
-			return errResult("Observation capture failed: " + err.Error()), TextOutput{}, nil
+			return errResult("Decision failed: " + err.Error()), TextOutput{}, nil
 		}
-
-		data, _ := json.MarshalIndent(result, "", "  ")
-		return nil, TextOutput{Result: string(data)}, nil
+		pretty := map[string]interface{}{}
+		if err := json.Unmarshal(data, &pretty); err != nil {
+			return nil, TextOutput{Result: string(data)}, nil
+		}
+		out, _ := json.MarshalIndent(pretty, "", "  ")
+		return nil, TextOutput{Result: string(out)}, nil
 	}
 }
 

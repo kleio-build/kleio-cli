@@ -48,7 +48,6 @@ func main() {
 	rootCmd.AddCommand(commands.NewCheckpointCmd(getClient))
 	rootCmd.AddCommand(commands.NewBacklogCmd(getClient))
 	rootCmd.AddCommand(commands.NewDecideCmd(getClient))
-	rootCmd.AddCommand(commands.NewObserveCmd(getClient))
 	rootCmd.AddCommand(commands.NewConfigCmd())
 	rootCmd.AddCommand(commands.NewLoginCmd(getClient))
 	rootCmd.AddCommand(commands.NewLogoutCmd())
