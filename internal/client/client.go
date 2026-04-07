@@ -127,7 +127,8 @@ type BacklogItem struct {
 	Title            string   `json:"title"`
 	Summary          string   `json:"summary"`
 	Category         string   `json:"category"`
-	Priority         string   `json:"priority"`
+	Urgency          string   `json:"urgency"`
+	Importance       string   `json:"importance"`
 	Status           string   `json:"status"`
 	RepoName         *string  `json:"repo_name"`
 	DedupeConfidence *float64 `json:"dedupe_confidence"`
@@ -310,13 +311,16 @@ func (c *Client) ListCaptures(opts ListCapturesOptions) ([]CaptureListItem, erro
 	return wrapper.Data, nil
 }
 
-func (c *Client) ListBacklogItems(status, priority, category, repo string) ([]BacklogItem, error) {
+func (c *Client) ListBacklogItems(status, urgency, importance, category, repo string) ([]BacklogItem, error) {
 	params := url.Values{}
 	if status != "" {
 		params.Set("status", status)
 	}
-	if priority != "" {
-		params.Set("priority", priority)
+	if urgency != "" {
+		params.Set("urgency", urgency)
+	}
+	if importance != "" {
+		params.Set("importance", importance)
 	}
 	if category != "" {
 		params.Set("category", category)

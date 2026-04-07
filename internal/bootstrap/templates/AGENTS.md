@@ -92,7 +92,7 @@ Call at natural breakpoints to check your logging behavior for the current sessi
 Use before creating a new durable work item if there is a meaningful chance it already exists.
 
 ### `kleio_backlog_prioritize`
-Only change priority or status with clear user intent, explicit session intent, or obvious triage context.
+Only change urgency, importance, or status with clear user intent, explicit session intent, or obvious triage context. Urgency = how time-sensitive; importance = how much it affects project goals.
 
 ## Threshold
 

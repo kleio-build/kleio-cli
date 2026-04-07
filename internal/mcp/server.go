@@ -60,10 +60,11 @@ type DecideInput struct {
 }
 
 type BacklogListInput struct {
-	Status   string `json:"status,omitempty" jsonschema:"Filter by status (new, reviewed, ready, done, ignored)"`
-	Priority string `json:"priority,omitempty" jsonschema:"Filter by priority (low, medium, high)"`
-	Category string `json:"category,omitempty" jsonschema:"Filter by category"`
-	Repo     string `json:"repo,omitempty" jsonschema:"Filter by repository name"`
+	Status     string `json:"status,omitempty" jsonschema:"Filter by status (new, reviewed, ready, done, ignored)"`
+	Urgency    string `json:"urgency,omitempty" jsonschema:"Filter by urgency (low, medium, high)"`
+	Importance string `json:"importance,omitempty" jsonschema:"Filter by importance (low, medium, high)"`
+	Category   string `json:"category,omitempty" jsonschema:"Filter by category"`
+	Repo       string `json:"repo,omitempty" jsonschema:"Filter by repository name"`
 }
 
 type BacklogShowInput struct {
@@ -71,9 +72,10 @@ type BacklogShowInput struct {
 }
 
 type BacklogPrioritizeInput struct {
-	ID       string `json:"id" jsonschema:"Backlog item ID"`
-	Priority string `json:"priority,omitempty" jsonschema:"New priority (low, medium, high)"`
-	Status   string `json:"status,omitempty" jsonschema:"New status (new, reviewed, ready, done, ignored)"`
+	ID         string `json:"id" jsonschema:"Backlog item ID"`
+	Urgency    string `json:"urgency,omitempty" jsonschema:"New urgency (low, medium, high)"`
+	Importance string `json:"importance,omitempty" jsonschema:"New importance (low, medium, high)"`
+	Status     string `json:"status,omitempty" jsonschema:"New status (new, reviewed, ready, done, ignored)"`
 }
 
 type SessionSummaryInput struct{}
@@ -118,7 +120,7 @@ const kleioInstructions = `Kleio records durable engineering signals. You have t
 
 3. kleio_checkpoint — relational checkpoint path. Record what was implemented in a meaningful slice: validation status, files changed, optional caveats/deferred. Required: content, slice_category, slice_status, validation_status.
 
-Read tools: kleio_backlog_list, kleio_backlog_show, kleio_backlog_prioritize.
+Read tools: kleio_backlog_list, kleio_backlog_show. Triage tool: kleio_backlog_prioritize (set urgency, importance, status).
 
 RULES:
 - If you choose a non-trivial direction, log it with kleio_decide BEFORE implementing.
@@ -163,7 +165,7 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_prioritize",
-		Description: "Update the priority and/or status of a backlog item.",
+		Description: "Update the urgency, importance, and/or status of a backlog item.",
 	}, backlogPrioritizeHandler(apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -392,7 +394,7 @@ func decideHandler(c *kleioclient.Client, session *sessionState) func(ctx contex
 
 func backlogListHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
-		items, err := c.ListBacklogItems(input.Status, input.Priority, input.Category, input.Repo)
+		items, err := c.ListBacklogItems(input.Status, input.Urgency, input.Importance, input.Category, input.Repo)
 		if err != nil {
 			if r := authErrResult(err); r != nil {
 				return r, TextOutput{}, nil
@@ -428,14 +430,17 @@ func backlogPrioritizeHandler(c *kleioclient.Client) func(ctx context.Context, r
 		}
 
 		updates := map[string]interface{}{}
-		if input.Priority != "" {
-			updates["priority"] = input.Priority
+		if input.Urgency != "" {
+			updates["urgency"] = input.Urgency
+		}
+		if input.Importance != "" {
+			updates["importance"] = input.Importance
 		}
 		if input.Status != "" {
 			updates["status"] = input.Status
 		}
 		if len(updates) == 0 {
-			return errResult("Specify priority and/or status to update"), TextOutput{}, nil
+			return errResult("Specify urgency, importance, and/or status to update"), TextOutput{}, nil
 		}
 
 		item, err := c.UpdateBacklogItem(input.ID, updates)

@@ -48,9 +48,9 @@ Call at natural breakpoints (before finishing a task, after a long implementatio
 
 ### Backlog tools — read and triage
 
-- **`kleio_backlog_list`:** Before proposing duplicate work, or when the user asks what is already tracked—list with filters (`status`, `priority`, `category`, `repo`) as needed.
+- **`kleio_backlog_list`:** Before proposing duplicate work, or when the user asks what is already tracked—list with filters (`status`, `urgency`, `importance`, `category`, `repo`) as needed.
 - **`kleio_backlog_show`:** When you have an item `id` and need full detail to implement or discuss it.
-- **`kleio_backlog_prioritize`:** When the user (or session outcome) implies a backlog item should change **priority** and/or **status** (for example mark `done`, `ignored`, raise to `high`, move to `ready`). Do not re-prioritize without clear user or session intent.
+- **`kleio_backlog_prioritize`:** When the user (or session outcome) implies a backlog item should change **urgency**, **importance**, and/or **status** (for example mark `done`, `ignored`, raise urgency to `high`, move to `ready`). Urgency = time-sensitivity; importance = impact on project goals. Do not re-prioritize without clear user or session intent.
 
 ### Hygiene
 

@@ -23,18 +23,19 @@ func NewBacklogCmd(getClient func() *client.Client) *cobra.Command {
 
 func newBacklogListCmd(getClient func() *client.Client) *cobra.Command {
 	var (
-		status   string
-		priority string
-		category string
-		repo     string
-		asJSON   bool
+		status     string
+		urgency    string
+		importance string
+		category   string
+		repo       string
+		asJSON     bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List synthesized backlog items",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			items, err := getClient().ListBacklogItems(status, priority, category, repo)
+			items, err := getClient().ListBacklogItems(status, urgency, importance, category, repo)
 			if err != nil {
 				return fmt.Errorf("failed to list backlog items: %w", err)
 			}
@@ -52,8 +53,8 @@ func newBacklogListCmd(getClient func() *client.Client) *cobra.Command {
 
 			for _, item := range items {
 				statusIcon := statusSymbol(item.Status)
-				priorityLabel := priorityLabel(item.Priority)
-				fmt.Printf("%s %s [%s] %s\n", statusIcon, item.ID[:8], priorityLabel, item.Title)
+				label := axisLabel(item.Urgency, item.Importance)
+				fmt.Printf("%s %s [%s] %s\n", statusIcon, item.ID[:8], label, item.Title)
 			}
 
 			fmt.Printf("\n%d items\n", len(items))
@@ -62,7 +63,8 @@ func newBacklogListCmd(getClient func() *client.Client) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&status, "status", "", "Filter by status (new, reviewed, ready, done, ignored)")
-	cmd.Flags().StringVar(&priority, "priority", "", "Filter by priority (low, medium, high)")
+	cmd.Flags().StringVar(&urgency, "urgency", "", "Filter by urgency (low, medium, high)")
+	cmd.Flags().StringVar(&importance, "importance", "", "Filter by importance (low, medium, high)")
 	cmd.Flags().StringVar(&category, "category", "", "Filter by category")
 	cmd.Flags().StringVar(&repo, "repo", "", "Filter by repo")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
@@ -89,16 +91,17 @@ func newBacklogShowCmd(getClient func() *client.Client) *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("ID:       %s\n", item.ID)
-			fmt.Printf("Title:    %s\n", item.Title)
-			fmt.Printf("Summary:  %s\n", item.Summary)
-			fmt.Printf("Category: %s\n", item.Category)
-			fmt.Printf("Priority: %s\n", item.Priority)
-			fmt.Printf("Status:   %s\n", item.Status)
+			fmt.Printf("ID:         %s\n", item.ID)
+			fmt.Printf("Title:      %s\n", item.Title)
+			fmt.Printf("Summary:    %s\n", item.Summary)
+			fmt.Printf("Category:   %s\n", item.Category)
+			fmt.Printf("Urgency:    %s\n", item.Urgency)
+			fmt.Printf("Importance: %s\n", item.Importance)
+			fmt.Printf("Status:     %s\n", item.Status)
 			if item.RepoName != nil {
-				fmt.Printf("Repo:     %s\n", *item.RepoName)
+				fmt.Printf("Repo:       %s\n", *item.RepoName)
 			}
-			fmt.Printf("Created:  %s\n", item.CreatedAt)
+			fmt.Printf("Created:    %s\n", item.CreatedAt)
 			return nil
 		},
 	}
@@ -109,24 +112,31 @@ func newBacklogShowCmd(getClient func() *client.Client) *cobra.Command {
 
 func newBacklogPrioritizeCmd(getClient func() *client.Client) *cobra.Command {
 	var (
-		priority string
-		status   string
+		urgency    string
+		importance string
+		status     string
 	)
 
-	validPriorities := map[string]bool{"low": true, "medium": true, "high": true}
+	validAxes := map[string]bool{"low": true, "medium": true, "high": true}
 	validStatuses := map[string]bool{"new": true, "reviewed": true, "ready": true, "done": true, "ignored": true}
 
 	cmd := &cobra.Command{
 		Use:   "prioritize [id]",
-		Short: "Set priority and/or status of a backlog item",
+		Short: "Set urgency, importance, and/or status of a backlog item",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			updates := map[string]interface{}{}
-			if priority != "" {
-				if !validPriorities[priority] {
-					return fmt.Errorf("invalid priority '%s', valid values: low, medium, high", priority)
+			if urgency != "" {
+				if !validAxes[urgency] {
+					return fmt.Errorf("invalid urgency '%s', valid values: low, medium, high", urgency)
 				}
-				updates["priority"] = priority
+				updates["urgency"] = urgency
+			}
+			if importance != "" {
+				if !validAxes[importance] {
+					return fmt.Errorf("invalid importance '%s', valid values: low, medium, high", importance)
+				}
+				updates["importance"] = importance
 			}
 			if status != "" {
 				if !validStatuses[status] {
@@ -135,7 +145,7 @@ func newBacklogPrioritizeCmd(getClient func() *client.Client) *cobra.Command {
 				updates["status"] = status
 			}
 			if len(updates) == 0 {
-				return fmt.Errorf("specify --priority and/or --status")
+				return fmt.Errorf("specify --urgency, --importance, and/or --status")
 			}
 
 			item, err := getClient().UpdateBacklogItem(args[0], updates)
@@ -143,12 +153,13 @@ func newBacklogPrioritizeCmd(getClient func() *client.Client) *cobra.Command {
 				return fmt.Errorf("failed to update: %w", err)
 			}
 
-			fmt.Printf("Updated %s: priority=%s status=%s\n", item.ID[:8], item.Priority, item.Status)
+			fmt.Printf("Updated %s: urgency=%s importance=%s status=%s\n", item.ID[:8], item.Urgency, item.Importance, item.Status)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&priority, "priority", "", "Set priority (low, medium, high)")
+	cmd.Flags().StringVar(&urgency, "urgency", "", "Set urgency (low, medium, high)")
+	cmd.Flags().StringVar(&importance, "importance", "", "Set importance (low, medium, high)")
 	cmd.Flags().StringVar(&status, "status", "", "Set status (new, reviewed, ready, done, ignored)")
 
 	return cmd
@@ -169,13 +180,17 @@ func statusSymbol(status string) string {
 	}
 }
 
-func priorityLabel(p string) string {
-	switch p {
+func axisLabel(urgency, importance string) string {
+	return fmt.Sprintf("U:%s I:%s", shortLevel(urgency), shortLevel(importance))
+}
+
+func shortLevel(level string) string {
+	switch level {
 	case "high":
-		return "HIGH"
+		return "H"
 	case "medium":
-		return "MED "
+		return "M"
 	default:
-		return "LOW "
+		return "L"
 	}
 }
