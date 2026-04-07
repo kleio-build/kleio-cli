@@ -16,6 +16,7 @@ import (
 
 type CaptureInput struct {
 	Content         string `json:"content" jsonschema:"The work item text to capture (max 4000 chars)"`
+	Title           string `json:"title,omitempty" jsonschema:"Optional short title for the backlog item (max 80 chars). If omitted, the server synthesizes one via LLM."`
 	RepoName        string `json:"repo_name,omitempty" jsonschema:"Repository name"`
 	BranchName      string `json:"branch_name,omitempty" jsonschema:"Branch name"`
 	FilePath        string `json:"file_path,omitempty" jsonschema:"Relevant file path"`
@@ -192,6 +193,9 @@ func captureHandler(c *kleioclient.Client, session *sessionState) func(ctx conte
 			Content:    input.Content,
 			SourceType: "agent",
 			AuthorType: "agent",
+		}
+		if input.Title != "" {
+			captureInput.TitleHint = &input.Title
 		}
 		if input.AuthorType != "" {
 			captureInput.AuthorType = input.AuthorType

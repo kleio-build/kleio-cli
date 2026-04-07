@@ -97,6 +97,7 @@ type CaptureInput struct {
 	SignalType      string   `json:"signal_type,omitempty"`
 	StructuredData  *string  `json:"structured_data,omitempty"`
 	Tags            []string `json:"tags,omitempty"`
+	TitleHint       *string  `json:"title_hint,omitempty"`
 }
 
 type CaptureResult struct {
