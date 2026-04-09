@@ -10,10 +10,13 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ErrAuthRequired is returned when authentication is needed but not configured.
 var ErrAuthRequired = errors.New("authentication required: run `kleio login` to authenticate, then restart the MCP server")
+
+const defaultHTTPTimeout = 90 * time.Second
 
 // OnTokenRefreshFunc is called after a successful token refresh so callers
 // (e.g. the MCP server) can persist the new tokens.
@@ -38,7 +41,7 @@ func New(baseURL, apiKey, workspaceID string) *Client {
 		baseURL:     baseURL,
 		apiKey:      apiKey,
 		workspaceID: workspaceID,
-		httpClient:  &http.Client{},
+		httpClient:  &http.Client{Timeout: defaultHTTPTimeout},
 	}
 }
 
@@ -47,7 +50,7 @@ func NewWithToken(baseURL, token, workspaceID string) *Client {
 		baseURL:     baseURL,
 		token:       token,
 		workspaceID: workspaceID,
-		httpClient:  &http.Client{},
+		httpClient:  &http.Client{Timeout: defaultHTTPTimeout},
 	}
 }
 
@@ -59,7 +62,7 @@ func NewWithTokens(baseURL, token, refreshToken, workspaceID string) *Client {
 		token:        token,
 		refreshToken: refreshToken,
 		workspaceID:  workspaceID,
-		httpClient:   &http.Client{},
+		httpClient:   &http.Client{Timeout: defaultHTTPTimeout},
 	}
 }
 

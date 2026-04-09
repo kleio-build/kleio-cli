@@ -3,32 +3,22 @@ package bootstrap
 import (
 	"io/fs"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestTemplateFS_hasAGENTS(t *testing.T) {
 	fsys, err := TemplateFS()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	b, err := fs.ReadFile(fsys, "AGENTS.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(b) < 20 {
-		t.Fatalf("AGENTS.md too short: %d", len(b))
-	}
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(b), 20, "AGENTS.md too short")
 }
 
 func TestTemplateFS_cursorRuleEmbedded(t *testing.T) {
 	fsys, err := TemplateFS()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	b, err := fs.ReadFile(fsys, "cursor/rules/kleio-mcp.mdc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(b) < 10 {
-		t.Fatalf("cursor/rules/kleio-mcp.mdc too short: %d", len(b))
-	}
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(b), 10, "cursor/rules/kleio-mcp.mdc too short")
 }

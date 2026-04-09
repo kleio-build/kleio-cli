@@ -52,7 +52,7 @@ func Load() (*Config, error) {
 
 	var fileCfg Config
 	if err := yaml.Unmarshal(data, &fileCfg); err != nil {
-		return cfg, nil
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
 	if fileCfg.APIURL != "" {

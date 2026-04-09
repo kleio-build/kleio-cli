@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestHealthCheck(t *testing.T) {
@@ -17,9 +19,7 @@ func TestHealthCheck(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := HealthCheck(srv.URL, srv.Client()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, HealthCheck(srv.URL, srv.Client()))
 }
 
 func TestGetWorkspaceCounts_parse(t *testing.T) {
@@ -43,13 +43,8 @@ func TestGetWorkspaceCounts_parse(t *testing.T) {
 
 	c := New(srv.URL, "k", "ws1")
 	out, err := c.GetWorkspaceCounts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.CapturesCount != 3 || out.BacklogItemsCount != 2 {
-		t.Fatalf("counts: %+v", out)
-	}
-	if out.BacklogByStatus["new"] != 2 {
-		t.Fatalf("by status: %+v", out.BacklogByStatus)
-	}
+	require.NoError(t, err)
+	require.Equal(t, int64(3), out.CapturesCount)
+	require.Equal(t, int64(2), out.BacklogItemsCount)
+	require.Equal(t, int64(2), out.BacklogByStatus["new"])
 }
