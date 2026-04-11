@@ -15,7 +15,6 @@ Use the **Kleio** MCP server when work produces something worth remembering beyo
 
 - Set `content` to a concrete, self-contained summary (what is wrong / what to build).
 - Set `signal_type` to `work_item` (default) for backlog-style items. Only `work_item` creates/links a backlog item.
-- Set `signal_type` to `observation` for non-actionable signals (patterns, smells, hypotheses). These are stored as captures without creating backlog items.
 - **Never** set `signal_type` to `checkpoint` or `decision` here—the tool and API reject them. Use **`kleio_checkpoint`** for checkpoints and **`kleio_decide`** for decisions.
 - Include `repo_name`, `branch_name`, `file_path`, and `line_start` when known so signals stay grounded.
 - Set `author_type` to `agent` when the agent is submitting.

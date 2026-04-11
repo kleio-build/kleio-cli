@@ -44,7 +44,6 @@ A change is non-trivial if it does any of the following:
 | **Decision** | `kleio_decide` | What we **chose** and why. Uses relational path with structured `alternatives`, `rationale`, `confidence` fields. |
 | **Checkpoint** | `kleio_checkpoint` | What was **implemented** in this work slice (provenance, validation, optional handoff). Uses `POST /api/captures` with a nested checkpoint—not the smart capture path. |
 | **Work item** | `kleio_capture` | **Follow-up** work to schedule (smart/backlog synthesis). Only `signal_type=work_item` creates backlog items. |
-| **Observation** | `kleio_capture` with `signal_type=observation` | Non-actionable signal (pattern, smell, hypothesis). Stored as a capture without backlog synthesis. |
 
 Do not use `signal_type: checkpoint` or `signal_type: decision` with `kleio_capture`; the server and CLI reject them. Use `kleio_checkpoint` / `kleio_decide` instead.
 
@@ -74,7 +73,7 @@ Use for actionable follow-up work (smart capture / backlog path):
 - feature gaps
 - debt introduced or discovered during implementation
 
-Only `signal_type=work_item` (default) creates or links backlog items. Use `signal_type=observation` for non-actionable signals that are stored without backlog synthesis.
+Only `signal_type=work_item` (default) creates or links backlog items.
 
 This is **not** for relational checkpoints or decisions.
 

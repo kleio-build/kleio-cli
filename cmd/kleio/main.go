@@ -54,6 +54,7 @@ func main() {
 	rootCmd.AddCommand(commands.NewWorkspaceCmd(getClient))
 	rootCmd.AddCommand(commands.NewInitCmd(getClient))
 	rootCmd.AddCommand(commands.NewStatusCmd(getClient))
+	rootCmd.AddCommand(commands.NewImportCmd(getClient))
 
 	mcpCmd := &cobra.Command{
 		Use:          "mcp",

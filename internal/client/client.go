@@ -387,6 +387,87 @@ func (c *Client) UpdateBacklogItem(id string, updates map[string]interface{}) (*
 	return &wrapper.Data, nil
 }
 
+// MemoryQueryResult is the response from the memory query API.
+type MemoryQueryResult struct {
+	Answer  string         `json:"answer"`
+	Sources []MemorySource `json:"sources"`
+}
+
+type MemorySource struct {
+	CaptureID  string  `json:"capture_id"`
+	Content    string  `json:"content"`
+	SignalType string  `json:"signal_type"`
+	RepoName   string  `json:"repo_name,omitempty"`
+	BranchName string  `json:"branch_name,omitempty"`
+	FilePath   string  `json:"file_path,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+	Similarity float64 `json:"similarity"`
+}
+
+func (c *Client) AskMemory(question string) (*MemoryQueryResult, error) {
+	body, err := json.Marshal(map[string]string{"question": question})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doRequest("POST", "/api/memory/query", body)
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapper struct {
+		Data MemoryQueryResult `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &wrapper.Data, nil
+}
+
+// ADRFileInput represents a single ADR file to import.
+type ADRFileInput struct {
+	FilePath string `json:"file_path"`
+	Content  string `json:"content"`
+}
+
+// ADRImportResult summarizes the result of an ADR import.
+type ADRImportResult struct {
+	Imported int `json:"imported"`
+	Skipped  int `json:"skipped"`
+	Items    []struct {
+		FilePath  string `json:"file_path"`
+		Title     string `json:"title"`
+		Format    string `json:"format"`
+		CaptureID string `json:"capture_id,omitempty"`
+		Skipped   bool   `json:"skipped"`
+		Reason    string `json:"reason,omitempty"`
+	} `json:"items"`
+}
+
+func (c *Client) ImportADRs(repoName string, files []ADRFileInput) (*ADRImportResult, error) {
+	payload := map[string]interface{}{
+		"repo_name": repoName,
+		"files":     files,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doRequest("POST", "/api/import/adr", body)
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapper struct {
+		Data ADRImportResult `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &wrapper.Data, nil
+}
+
 // doRequestRaw performs an HTTP request without auth headers or auto-refresh.
 func (c *Client) doRequestRaw(method, path string, body []byte) ([]byte, error) {
 	var bodyReader io.Reader

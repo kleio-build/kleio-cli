@@ -23,7 +23,7 @@ type CaptureInput struct {
 	LineStart       int    `json:"line_start,omitempty" jsonschema:"Start line number"`
 	FreeformContext string `json:"freeform_context,omitempty" jsonschema:"Additional context (max 8000 chars)"`
 	AuthorType      string `json:"author_type,omitempty" jsonschema:"Who is capturing: human or agent"`
-	SignalType      string `json:"signal_type,omitempty" jsonschema:"work_item (default, creates backlog) or observation (stored only, no backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead"`
+	SignalType      string `json:"signal_type,omitempty" jsonschema:"work_item (default, creates backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead"`
 }
 
 // CheckpointInput is the relational checkpoint path (POST /api/captures). Field names match the API checkpoint object.
@@ -79,6 +79,10 @@ type BacklogPrioritizeInput struct {
 	Status     string `json:"status,omitempty" jsonschema:"New status (new, reviewed, ready, done, ignored)"`
 }
 
+type AskInput struct {
+	Question string `json:"question" jsonschema:"The question to ask about your engineering history (required)"`
+}
+
 type SessionSummaryInput struct{}
 
 type TextOutput struct {
@@ -115,13 +119,13 @@ func (s *sessionState) tally() string {
 
 const kleioInstructions = `Kleio records durable engineering signals. You have three write tools:
 
-1. kleio_capture — smart capture path. Use signal_type=work_item (default) for actionable follow-up work (bugs, debt, feature gaps) — only work_item creates backlog items. Use signal_type=observation for non-actionable patterns or smells (stored without backlog synthesis). Do NOT use signal_type=checkpoint or decision here; the API rejects them.
+1. kleio_capture — smart capture path. Use signal_type=work_item (default) for actionable follow-up work (bugs, debt, feature gaps) — only work_item creates backlog items. Do NOT use signal_type=checkpoint or decision here; the API rejects them.
 
 2. kleio_decide — relational decision path. Call when you commit to a direction after comparing alternatives. Required: content, rationale, confidence (low/medium/high). Include alternatives when they exist.
 
 3. kleio_checkpoint — relational checkpoint path. Record what was implemented in a meaningful slice: validation status, files changed, optional caveats/deferred. Required: content, slice_category, slice_status, validation_status.
 
-Read tools: kleio_backlog_list, kleio_backlog_show. Triage tool: kleio_backlog_prioritize (set urgency, importance, status).
+Read tools: kleio_backlog_list, kleio_backlog_show. Triage tool: kleio_backlog_prioritize (set urgency, importance, status). Query tool: kleio_ask — ask questions about engineering history and get AI-synthesized answers with sources.
 
 RULES:
 - If you choose a non-trivial direction, log it with kleio_decide BEFORE implementing.
@@ -141,7 +145,7 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_capture",
-		Description: "Smart capture path: POST /api/captures/smart. Use signal_type work_item (default, creates/links backlog) or observation (stored only, no backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead.",
+		Description: "Smart capture path: POST /api/captures/smart. Use signal_type work_item (default, creates/links backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead.",
 	}, captureHandler(apiClient, session))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -173,6 +177,11 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 		Name:        "kleio_session_summary",
 		Description: "Show what Kleio signals have been logged this session. Call at natural breakpoints to check your logging behavior.",
 	}, sessionSummaryHandler(apiClient, session))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "kleio_ask",
+		Description: "Query Kleio's engineering memory. Ask questions about past decisions, work items, commits, reviews, and other signals. Returns an AI-synthesized answer with source references.",
+	}, askHandler(apiClient))
 
 	return s
 }
@@ -503,6 +512,37 @@ func sessionSummaryHandler(c *kleioclient.Client, session *sessionState) func(ct
 			sb.WriteString("\n")
 			for _, n := range nudges {
 				sb.WriteString(n + "\n")
+			}
+		}
+
+		return nil, TextOutput{Result: sb.String()}, nil
+	}
+}
+
+func askHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input AskInput) (*mcp.CallToolResult, TextOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input AskInput) (*mcp.CallToolResult, TextOutput, error) {
+		if input.Question == "" {
+			return errResult("question is required"), TextOutput{}, nil
+		}
+
+		result, err := c.AskMemory(input.Question)
+		if err != nil {
+			if r := authErrResult(err); r != nil {
+				return r, TextOutput{}, nil
+			}
+			return errResult("Query failed: " + err.Error()), TextOutput{}, nil
+		}
+
+		var sb strings.Builder
+		sb.WriteString(result.Answer)
+		if len(result.Sources) > 0 {
+			sb.WriteString("\n\n---\nSources:\n")
+			for i, src := range result.Sources {
+				sb.WriteString(fmt.Sprintf("[%d] (%s) %s", i+1, src.SignalType, truncate(src.Content, 100)))
+				if src.RepoName != "" {
+					sb.WriteString(fmt.Sprintf(" [%s]", src.RepoName))
+				}
+				sb.WriteString(fmt.Sprintf(" (%.0f%% match)\n", src.Similarity*100))
 			}
 		}
 

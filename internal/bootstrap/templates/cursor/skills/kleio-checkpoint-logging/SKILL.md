@@ -1,6 +1,6 @@
 ---
 name: kleio-checkpoint-logging
-description: Record implementation-slice checkpoints via MCP `kleio_checkpoint` (relational POST /api/captures). Use when a meaningful slice of work is complete—not for backlog items or weak observations.
+description: Record implementation-slice checkpoints via MCP `kleio_checkpoint` (relational POST /api/captures). Use when a meaningful slice of work is complete—not for backlog items.
 ---
 
 # Kleio checkpoint logging
@@ -25,7 +25,7 @@ Structured fields (required): `slice_category`, `slice_status`, `validation_stat
 
 - Trivial edits only.
 - Intermediate steps inside the same slice (do not checkpoint every commit).
-- Speculative or unimplemented work (use `kleio_capture` with `signal_type=observation` or skip).
+- Speculative or unimplemented work.
 - Actionable follow-up work (use `kleio_capture` / smart path).
 - Settled engineering choices among options (use `kleio_decide`).
 
