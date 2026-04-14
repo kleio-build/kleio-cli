@@ -11,11 +11,14 @@ import (
 type ID string
 
 const (
-	Cursor  ID = "cursor"
-	Claude  ID = "claude"
-	Generic ID = "generic"
-	None    ID = "none"
-	All     ID = "all"
+	Cursor   ID = "cursor"
+	Claude   ID = "claude"
+	Windsurf ID = "windsurf"
+	Copilot  ID = "copilot"
+	Codex    ID = "codex"
+	Generic  ID = "generic"
+	None     ID = "none"
+	All      ID = "all"
 )
 
 // Embed paths are relative to the embedded templates root (see bootstrap.TemplateFS).
@@ -33,11 +36,30 @@ var (
 		"cursor/skills/kleio-checkpoint-logging/SKILL.md",
 		"cursor/skills/kleio-decision-logging/SKILL.md",
 		"cursor/mcp.json.example",
+		"cursor/mcp.http.json.example",
 		"cursor/hooks.json",
 	}
 
 	ClaudeFiles = []string{
 		"CLAUDE.md",
+		"claude/settings.json",
+		"claude/hooks/kleio-auth-check.sh",
+	}
+
+	WindsurfFiles = []string{
+		"windsurf/hooks.json",
+		"windsurf/hooks/kleio-auth-check.sh",
+	}
+
+	CopilotFiles = []string{
+		"github/hooks/kleio-hooks.json",
+		"github/hooks/kleio-auth-check.sh",
+		"github/copilot-instructions.md",
+	}
+
+	CodexFiles = []string{
+		"codex/hooks.json",
+		"codex/hooks/kleio-session-check.sh",
 	}
 )
 
@@ -54,8 +76,23 @@ func FilesFor(id ID) ([]string, error) {
 	case Cursor:
 		out := append(append([]string{}, CommonFiles...), CursorFiles...)
 		return uniq(out), nil
+	case Windsurf:
+		out := append(append([]string{}, CommonFiles...), WindsurfFiles...)
+		return uniq(out), nil
+	case Copilot:
+		out := append(append([]string{}, CommonFiles...), CopilotFiles...)
+		return uniq(out), nil
+	case Codex:
+		out := append(append([]string{}, CommonFiles...), CodexFiles...)
+		return uniq(out), nil
 	case All:
-		out := append(append(append([]string{}, CommonFiles...), CursorFiles...), ClaudeFiles...)
+		var out []string
+		out = append(out, CommonFiles...)
+		out = append(out, CursorFiles...)
+		out = append(out, ClaudeFiles...)
+		out = append(out, WindsurfFiles...)
+		out = append(out, CopilotFiles...)
+		out = append(out, CodexFiles...)
 		return uniq(out), nil
 	default:
 		return nil, fmt.Errorf("unknown profile: %s", id)
@@ -77,10 +114,10 @@ func ParseList(s string) ([]ID, error) {
 		}
 		id := ID(p)
 		switch id {
-		case Cursor, Claude, Generic, None, All:
+		case Cursor, Claude, Windsurf, Copilot, Codex, Generic, None, All:
 			out = append(out, id)
 		default:
-			return nil, fmt.Errorf("unknown profile %q (valid: cursor, claude, generic, none, all)", p)
+			return nil, fmt.Errorf("unknown profile %q (valid: cursor, claude, windsurf, copilot, codex, generic, none, all)", p)
 		}
 	}
 	if len(out) == 0 {
@@ -89,7 +126,7 @@ func ParseList(s string) ([]ID, error) {
 	return ExpandAll(out), nil
 }
 
-// ExpandAll replaces "all" with cursor+claude (generic is implied via file union).
+// ExpandAll replaces "all" with the full editor bundle (generic files are included per profile).
 func ExpandAll(ids []ID) []ID {
 	hasAll := false
 	for _, id := range ids {
@@ -99,7 +136,7 @@ func ExpandAll(ids []ID) []ID {
 		}
 	}
 	if hasAll {
-		return []ID{Cursor, Claude}
+		return []ID{Cursor, Claude, Windsurf, Copilot, Codex}
 	}
 	return uniqID(ids)
 }
@@ -156,8 +193,11 @@ func uniqID(ids []ID) []ID {
 // EmbedToDestRel maps an embedded template path to the path written in the project tree.
 func EmbedToDestRel(embedRel string) string {
 	embedRel = filepath.ToSlash(embedRel)
-	if strings.HasPrefix(embedRel, "cursor/") {
-		return ".cursor/" + strings.TrimPrefix(embedRel, "cursor/")
+	prefixes := []string{"cursor/", "claude/", "windsurf/", "github/", "codex/"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(embedRel, prefix) {
+			return "." + embedRel
+		}
 	}
 	return embedRel
 }
@@ -175,8 +215,18 @@ func SidecarPath(rel string) string {
 		return filepath.Join(dir, "kleio.config.kleio.example.yaml")
 	case base == "mcp.json.example" && strings.HasPrefix(rel, ".cursor/"):
 		return filepath.Join(dir, "mcp.kleio.json.example")
+	case base == "mcp.http.json.example" && strings.HasPrefix(rel, ".cursor/"):
+		return filepath.Join(dir, "mcp.http.kleio.json.example")
 	case base == "CLAUDE.md":
 		return filepath.Join(dir, "CLAUDE.kleio.yaml")
+	case base == "settings.json" && strings.HasPrefix(rel, ".claude/"):
+		return filepath.Join(dir, "settings.kleio.json")
+	case base == "hooks.json" && strings.HasPrefix(rel, ".windsurf/"):
+		return filepath.Join(dir, "kleio.hooks.json")
+	case base == "kleio-hooks.json" && strings.HasPrefix(rel, ".github/hooks/"):
+		return filepath.Join(dir, "kleio-hooks.kleio.json")
+	case base == "copilot-instructions.md" && strings.HasPrefix(rel, ".github/"):
+		return filepath.Join(dir, "copilot-instructions.kleio.md")
 	default:
 		if dir == "." {
 			return "kleio." + base
@@ -198,13 +248,28 @@ func Recommend(root string) ID {
 			return Claude
 		}
 	}
+	for _, s := range signals {
+		if s == ".windsurf/" {
+			return Windsurf
+		}
+	}
+	for _, s := range signals {
+		if s == ".github/copilot-instructions.md" {
+			return Copilot
+		}
+	}
+	for _, s := range signals {
+		if s == ".codex/" {
+			return Codex
+		}
+	}
 	return Cursor
 }
 
 // DetectSignals mirrors init detection (dirs + marker files).
 func DetectSignals(root string) []string {
 	var out []string
-	candidates := []string{".cursor", ".claude", ".github"}
+	candidates := []string{".cursor", ".claude", ".github", ".windsurf", ".codex"}
 	for _, p := range candidates {
 		if st, err := statDir(root, p); err == nil && st {
 			out = append(out, p+"/")
@@ -214,6 +279,9 @@ func DetectSignals(root string) []string {
 		if existsFile(root, name) {
 			out = append(out, name)
 		}
+	}
+	if existsFile(root, ".github/copilot-instructions.md") {
+		out = append(out, ".github/copilot-instructions.md")
 	}
 	return out
 }

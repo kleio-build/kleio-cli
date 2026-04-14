@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "post_mcp_tool_use": [
+      {
+        "command": "bash .windsurf/hooks/kleio-auth-check.sh",
+        "powershell": "bash .windsurf/hooks/kleio-auth-check.sh",
+        "show_output": true
+      }
+    ]
+  }
+}

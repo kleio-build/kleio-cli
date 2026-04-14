@@ -89,7 +89,22 @@ Call at natural breakpoints to check your logging behavior for the current sessi
 
 ### Cursor lifecycle hooks (this repo)
 
-Project-level `.cursor/hooks.json` nudges agents at **sessionStart** (early Kleio MCP / auth check via `kleio_session_summary`) and **sessionEnd** (audit logging gaps before the session closes). Hooks ship with the repo so Kleio logging is harder to forget.
+Project-level `.cursor/hooks.json` nudges agents at **sessionStart** (early Kleio MCP / auth check via `kleio_session_summary`) and **sessionEnd** (audit logging gaps before the session closes). **postToolUseFailure** matches Kleio MCP tools and reminds the user on auth errors. Hooks ship with the repo so Kleio logging is harder to forget.
+
+### Other editors (from `kleio init`)
+
+| Editor / agent | What gets installed |
+|----------------|---------------------|
+| **Claude Code** | `.claude/settings.json` + `.claude/hooks/kleio-auth-check.sh` (SessionStart, Stop, PostToolUseFailure) |
+| **Windsurf** | `.windsurf/hooks.json` + `.windsurf/hooks/kleio-auth-check.sh` (post_mcp_tool_use) |
+| **GitHub Copilot** | `.github/hooks/kleio-hooks.json` + `.github/hooks/kleio-auth-check.sh` + `.github/copilot-instructions.md` |
+| **OpenAI Codex** | `.codex/hooks.json` + `.codex/hooks/kleio-session-check.sh` (SessionStart / Stop; hooks are experimental) |
+
+Run `kleio init --tool=windsurf`, `--tool=copilot`, `--tool=codex`, or `--tool=all` to add these. Make any installed `*.sh` hooks executable (`chmod +x`).
+
+### Kleio MCP over HTTP (cloud / background agents)
+
+Remote agents can call **`POST /api/mcp`** on your Kleio API host (streamable HTTP MCP) with **`Authorization: Bearer <access_token>`** and **`X-Workspace-ID: <workspace_id>`**. Use this when the agent cannot run `kleio mcp` locally. See **`.cursor/mcp.http.json.example`** for a merge-ready HTTP MCP server entry.
 
 ### Kleio MCP auth after `kleio login`
 

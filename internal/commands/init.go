@@ -46,7 +46,7 @@ Use --non-interactive with --tool for CI (no prompts; writes sidecar files when 
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "run interactive wizard (tooling, auth, workspace)")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "no prompts; requires --tool when the profile cannot be inferred")
 	cmd.Flags().BoolVar(&forceOverwrite, "force-overwrite", false, "overwrite existing files without prompting")
-	cmd.Flags().StringVar(&tool, "tool", "", "tool profile: cursor, claude, generic, none, all, or comma-separated (e.g. cursor,claude)")
+	cmd.Flags().StringVar(&tool, "tool", "", "tool profile: cursor, claude, windsurf, copilot, codex, generic, none, all, or comma-separated (e.g. cursor,claude)")
 	return cmd
 }
 
@@ -162,7 +162,11 @@ func runInit(dir string, dryRun, yesNewOnly, interactive, nonInteractive, forceO
 		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(dest, data, 0644); err != nil {
+		mode := os.FileMode(0644)
+		if strings.HasSuffix(strings.ToLower(dest), ".sh") {
+			mode = 0755
+		}
+		if err := os.WriteFile(dest, data, mode); err != nil {
 			return err
 		}
 		fmt.Printf("wrote: %s\n", dest)
@@ -236,14 +240,7 @@ func runInit(dir string, dryRun, yesNewOnly, interactive, nonInteractive, forceO
 		fmt.Println("Init verify skipped (complete auth and workspace to verify API access).")
 	}
 
-	printNextSteps(
-		profileIDsInclude(ids, initprofile.Cursor),
-		profileIDsInclude(ids, initprofile.Claude),
-		profileIDsInclude(ids, initprofile.Generic),
-		written,
-		dir,
-		verifyOK,
-	)
+	printNextSteps(ids, written, dir, verifyOK)
 
 	return nil
 }
@@ -278,7 +275,7 @@ func resolveProfiles(dir string, interactive, nonInteractive bool, tool string, 
 	}
 	if nonInteractive {
 		if !hasProfileSignal(dir) {
-			return nil, fmt.Errorf("could not infer tool profile (no .cursor / .claude / marker files); pass --tool=cursor|claude|generic|none|all")
+			return nil, fmt.Errorf("could not infer tool profile (no .cursor / .claude / .windsurf / .codex / marker files); pass --tool=cursor|claude|windsurf|copilot|codex|generic|none|all")
 		}
 		return []initprofile.ID{initprofile.Recommend(dir)}, nil
 	}
@@ -290,7 +287,9 @@ func resolveProfiles(dir string, interactive, nonInteractive bool, tool string, 
 
 func hasProfileSignal(dir string) bool {
 	for _, s := range initprofile.DetectSignals(dir) {
-		if strings.HasPrefix(s, ".cursor/") || strings.HasPrefix(s, ".claude/") || s == "CLAUDE.md" {
+		if strings.HasPrefix(s, ".cursor/") || strings.HasPrefix(s, ".claude/") ||
+			strings.HasPrefix(s, ".windsurf/") || strings.HasPrefix(s, ".codex/") ||
+			s == "CLAUDE.md" || s == ".github/copilot-instructions.md" {
 			return true
 		}
 	}
@@ -306,7 +305,7 @@ func promptToolProfile(dir string, r *bufio.Reader) ([]initprofile.ID, error) {
 		fmt.Println("We could not infer your editor from the repo.")
 		fmt.Printf("Recommended tool profile: %s\n", rec)
 	}
-	fmt.Print("Which editor/tooling should Kleio install for? (cursor|claude|generic|none|all) [", rec, "]: ")
+	fmt.Print("Which editor/tooling should Kleio install for? (cursor|claude|windsurf|copilot|codex|generic|none|all) [", rec, "]: ")
 	line, err := r.ReadString('\n')
 	if err != nil {
 		return nil, err

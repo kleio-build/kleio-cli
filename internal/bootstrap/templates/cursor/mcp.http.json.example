@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "kleio-http": {
+      "url": "https://YOUR_KLEIO_API_HOST/api/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_ACCESS_TOKEN",
+        "X-Workspace-ID": "YOUR_WORKSPACE_ID",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream"
+      }
+    }
+  }
+}

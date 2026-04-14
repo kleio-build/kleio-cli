@@ -6,6 +6,7 @@ import (
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/config"
+	"github.com/kleio-build/kleio-cli/internal/initprofile"
 	"github.com/kleio-build/kleio-cli/internal/mcpdetect"
 )
 
@@ -73,19 +74,33 @@ func printInitVerify(ok bool, detail string) {
 	fmt.Printf("  API:       failed (%s)\n", detail)
 }
 
-func printNextSteps(wantsCursor, wantsClaude, wantsGeneric bool, writtenDests []string, projectDir string, verifyOK bool) {
+func printNextSteps(ids []initprofile.ID, writtenDests []string, projectDir string, verifyOK bool) {
 	fmt.Println()
 	fmt.Println("Next steps:")
 	fmt.Println(`  • Track your first slice: kleio checkpoint "Kleio CLI ready" --slice-category implementation --slice-status completed --validation-status passed`)
 
-	if wantsCursor || installedCursorArtifacts(writtenDests) {
+	wants := func(id initprofile.ID) bool {
+		return profileIDsInclude(ids, id)
+	}
+
+	if wants(initprofile.Cursor) || installedCursorArtifacts(writtenDests) {
 		printCursorMCPNextSteps(projectDir)
 	}
-	if wantsClaude || installedClaudeArtifacts(writtenDests) {
+	if wants(initprofile.Claude) || installedClaudeArtifacts(writtenDests) {
 		printClaudeCodeNextSteps(writtenDests)
 	}
-	if wantsGeneric && !wantsCursor && !wantsClaude {
-		fmt.Println("  • Editor-agnostic: follow AGENTS.md (or AGENTS.kleio.md) and run `kleio` from your terminal; add Kleio to your editor later with `kleio init --tool=cursor` or `--tool=claude` if needed.")
+	if wants(initprofile.Windsurf) || installedWindsurfArtifacts(writtenDests) {
+		printWindsurfNextSteps(writtenDests)
+	}
+	if wants(initprofile.Copilot) || installedCopilotArtifacts(writtenDests) {
+		printCopilotNextSteps()
+	}
+	if wants(initprofile.Codex) || installedCodexArtifacts(writtenDests) {
+		printCodexNextSteps()
+	}
+	if wants(initprofile.Generic) && !wants(initprofile.Cursor) && !wants(initprofile.Claude) &&
+		!wants(initprofile.Windsurf) && !wants(initprofile.Copilot) && !wants(initprofile.Codex) {
+		fmt.Println("  • Editor-agnostic: follow AGENTS.md (or AGENTS.kleio.md) and run `kleio` from your terminal; add Kleio to your editor later with `kleio init --tool=cursor`, `--tool=claude`, etc.")
 	}
 
 	if !verifyOK {
@@ -119,7 +134,38 @@ func printClaudeCodeNextSteps(writtenDests []string) {
 	if hasSidecar {
 		fmt.Println("    - You declined to overwrite an existing `CLAUDE.md`; open `CLAUDE.kleio.yaml` and merge its notes into your preferred Claude config or project docs.")
 	}
-	fmt.Println("    - Run `kleio` from the Claude Code terminal (or your system shell) for checkpoints and captures; there is no separate Kleio MCP transport for Claude Code today.")
+	fmt.Println("    - Merge `.claude/settings.json` (or `settings.kleio.json` if installed as a sidecar) into your Claude Code hooks; ensure `.claude/hooks/kleio-auth-check.sh` is executable (`chmod +x`).")
+	fmt.Println("    - Run `kleio` from the Claude Code terminal (or your system shell) for checkpoints and captures, or use Kleio MCP. For cloud agents, use HTTP MCP (`POST /api/mcp` on your Kleio API host) with `Authorization: Bearer` and `X-Workspace-ID`.")
+}
+
+func printWindsurfNextSteps(writtenDests []string) {
+	fmt.Println("  • Windsurf (Cascade):")
+	fmt.Println("    - Hooks live in `.windsurf/hooks.json`; ensure `.windsurf/hooks/kleio-auth-check.sh` is executable (`chmod +x`).")
+	hasSidecar := false
+	for _, p := range writtenDests {
+		if strings.Contains(filepathToSlash(p), "kleio.hooks.json") {
+			hasSidecar = true
+			break
+		}
+	}
+	if hasSidecar {
+		fmt.Println("    - You installed a sidecar hooks file; merge `kleio.hooks.json` into `.windsurf/hooks.json` if Cascade should load Kleio hooks.")
+	}
+	fmt.Println("    - Configure Kleio MCP in Windsurf per vendor docs; use HTTP MCP for remote/cloud sessions when supported.")
+}
+
+func printCopilotNextSteps() {
+	fmt.Println("  • GitHub Copilot (cloud agent / CLI):")
+	fmt.Println("    - Commit `.github/hooks/kleio-hooks.json` to the default branch for cloud agent hooks; make `.github/hooks/kleio-auth-check.sh` executable.")
+	fmt.Println("    - Merge `.github/copilot-instructions.md` into team instructions if you already use a custom file.")
+	fmt.Println("    - For remote MCP, point the agent at your Kleio API `POST /api/mcp` with bearer token and `X-Workspace-ID` (see Kleio docs).")
+}
+
+func printCodexNextSteps() {
+	fmt.Println("  • OpenAI Codex:")
+	fmt.Println("    - Enable hooks in `~/.codex/config.toml`: `[features]` then `codex_hooks = true` (experimental; Bash hook events only for MCP today).")
+	fmt.Println("    - `.codex/hooks.json` includes SessionStart/Stop reminders; `kleio-session-check.sh` uses `jq`, `python3`, or a tiny grep fallback (no extra install on typical dev machines).")
+	fmt.Println("    - Prefer Kleio HTTP MCP in Codex config for cloud or headless runners when supported.")
 }
 
 func installedClaudeArtifacts(writtenDests []string) bool {
@@ -136,6 +182,34 @@ func installedCursorArtifacts(writtenDests []string) bool {
 	for _, p := range writtenDests {
 		s := filepathToSlash(p)
 		if strings.Contains(s, ".cursor/") && strings.Contains(s, "mcp") {
+			return true
+		}
+	}
+	return false
+}
+
+func installedWindsurfArtifacts(writtenDests []string) bool {
+	for _, p := range writtenDests {
+		if strings.Contains(filepathToSlash(p), ".windsurf/") {
+			return true
+		}
+	}
+	return false
+}
+
+func installedCopilotArtifacts(writtenDests []string) bool {
+	for _, p := range writtenDests {
+		s := filepathToSlash(p)
+		if strings.Contains(s, ".github/hooks/kleio") || strings.Contains(s, "copilot-instructions") {
+			return true
+		}
+	}
+	return false
+}
+
+func installedCodexArtifacts(writtenDests []string) bool {
+	for _, p := range writtenDests {
+		if strings.Contains(filepathToSlash(p), ".codex/") {
 			return true
 		}
 	}

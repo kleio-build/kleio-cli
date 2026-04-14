@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)/.codex/hooks/kleio-session-check.sh\"",
+            "statusMessage": "Kleio session reminder"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)/.codex/hooks/kleio-session-check.sh\"",
+            "timeout": 30,
+            "statusMessage": "Kleio session summary check"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "true",
+            "statusMessage": "Kleio placeholder (Codex hooks currently Bash-only)"
+          }
+        ]
+      }
+    ]
+  }
+}

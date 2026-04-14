@@ -18,7 +18,7 @@
     "postToolUseFailure": [
       {
         "type": "prompt",
-        "matcher": "mcp__*kleio*",
+        "matcher": "mcp__user-kleio__*",
         "prompt": "A Kleio MCP tool call just failed. If the error mentions authentication, login, or 401, tell the user: 'Kleio auth expired — run `kleio login` in a terminal. The MCP server will pick up the new tokens automatically within ~30 seconds.' Do not silently skip Kleio for the rest of the session.",
         "timeout": 10
       }

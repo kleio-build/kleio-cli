@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "echo 'Kleio: If Kleio MCP is enabled, call kleio_session_summary once early in this session.'",
+        "powershell": "Write-Output 'Kleio: If Kleio MCP is enabled, call kleio_session_summary once early in this session.'",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "./.github/hooks/kleio-auth-check.sh",
+        "powershell": "bash ./.github/hooks/kleio-auth-check.sh",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "./.github/hooks/kleio-auth-check.sh",
+        "powershell": "bash ./.github/hooks/kleio-auth-check.sh",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
