@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/spf13/cobra"
@@ -28,6 +29,9 @@ func newBacklogListCmd(getClient func() *client.Client) *cobra.Command {
 		importance string
 		category   string
 		repo       string
+		search     string
+		assignee   string
+		limit      int
 		asJSON     bool
 	)
 
@@ -35,7 +39,10 @@ func newBacklogListCmd(getClient func() *client.Client) *cobra.Command {
 		Use:   "list",
 		Short: "List synthesized backlog items",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			items, err := getClient().ListBacklogItems(status, urgency, importance, category, repo)
+			items, err := getClient().ListBacklogItems(client.BacklogListFilters{
+				Status: status, Urgency: urgency, Importance: importance, Category: category, Repo: repo,
+				Search: search, Assignee: assignee, Limit: limit,
+			})
 			if err != nil {
 				return fmt.Errorf("failed to list backlog items: %w", err)
 			}
@@ -54,7 +61,11 @@ func newBacklogListCmd(getClient func() *client.Client) *cobra.Command {
 			for _, item := range items {
 				statusIcon := statusSymbol(item.Status)
 				label := axisLabel(item.Urgency, item.Importance)
-				fmt.Printf("%s %s [%s] %s\n", statusIcon, item.ID[:8], label, item.Title)
+				ticket := ""
+				if item.ShortID != nil && *item.ShortID > 0 {
+					ticket = fmt.Sprintf("KL-%d ", *item.ShortID)
+				}
+				fmt.Printf("%s %s%s[%s] %s\n", statusIcon, ticket, item.ID[:8], label, item.Title)
 			}
 
 			fmt.Printf("\n%d items\n", len(items))
@@ -62,11 +73,14 @@ func newBacklogListCmd(getClient func() *client.Client) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&status, "status", "", "Filter by status (new, reviewed, ready, done, ignored)")
+	cmd.Flags().StringVar(&status, "status", "", "Filter by status (new, reviewed, ready, in_progress, done, ignored)")
 	cmd.Flags().StringVar(&urgency, "urgency", "", "Filter by urgency (low, medium, high)")
 	cmd.Flags().StringVar(&importance, "importance", "", "Filter by importance (low, medium, high)")
 	cmd.Flags().StringVar(&category, "category", "", "Filter by category")
 	cmd.Flags().StringVar(&repo, "repo", "", "Filter by repo")
+	cmd.Flags().StringVar(&search, "search", "", "Substring filter on title and summary")
+	cmd.Flags().StringVar(&assignee, "assignee", "", "Filter by assignee UUID (assignee=self not supported in CLI)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Max items to show after filters (0 = no cap)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
@@ -112,13 +126,14 @@ func newBacklogShowCmd(getClient func() *client.Client) *cobra.Command {
 
 func newBacklogPrioritizeCmd(getClient func() *client.Client) *cobra.Command {
 	var (
-		urgency    string
+		urgency     string
 		importance string
-		status     string
+		status      string
+		assigneeID  string
 	)
 
 	validAxes := map[string]bool{"low": true, "medium": true, "high": true}
-	validStatuses := map[string]bool{"new": true, "reviewed": true, "ready": true, "done": true, "ignored": true}
+	validStatuses := map[string]bool{"new": true, "reviewed": true, "ready": true, "in_progress": true, "done": true, "ignored": true}
 
 	cmd := &cobra.Command{
 		Use:   "prioritize [id]",
@@ -140,12 +155,22 @@ func newBacklogPrioritizeCmd(getClient func() *client.Client) *cobra.Command {
 			}
 			if status != "" {
 				if !validStatuses[status] {
-					return fmt.Errorf("invalid status '%s', valid values: new, reviewed, ready, done, ignored", status)
+					return fmt.Errorf("invalid status '%s', valid values: new, reviewed, ready, in_progress, done, ignored", status)
 				}
 				updates["status"] = status
 			}
+			if assigneeID != "" {
+				switch strings.ToLower(strings.TrimSpace(assigneeID)) {
+				case "none", "clear":
+					updates["assignee_id"] = nil
+				case "self":
+					return fmt.Errorf("--assignee self is not supported from CLI; use the web UI or MCP with a user session")
+				default:
+					updates["assignee_id"] = strings.TrimSpace(assigneeID)
+				}
+			}
 			if len(updates) == 0 {
-				return fmt.Errorf("specify --urgency, --importance, and/or --status")
+				return fmt.Errorf("specify --urgency, --importance, --status, and/or --assignee")
 			}
 
 			item, err := getClient().UpdateBacklogItem(args[0], updates)
@@ -160,7 +185,8 @@ func newBacklogPrioritizeCmd(getClient func() *client.Client) *cobra.Command {
 
 	cmd.Flags().StringVar(&urgency, "urgency", "", "Set urgency (low, medium, high)")
 	cmd.Flags().StringVar(&importance, "importance", "", "Set importance (low, medium, high)")
-	cmd.Flags().StringVar(&status, "status", "", "Set status (new, reviewed, ready, done, ignored)")
+	cmd.Flags().StringVar(&status, "status", "", "Set status (new, reviewed, ready, in_progress, done, ignored)")
+	cmd.Flags().StringVar(&assigneeID, "assignee", "", "Set assignee UUID, or none/clear to unassign (self not supported from CLI)")
 
 	return cmd
 }

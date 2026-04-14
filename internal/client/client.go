@@ -8,10 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kleio-build/kleio-cli/internal/config"
 )
 
@@ -160,10 +163,57 @@ type BacklogItem struct {
 	Importance       string   `json:"importance"`
 	Status           string   `json:"status"`
 	RepoName         *string  `json:"repo_name"`
+	AssigneeID       *string  `json:"assignee_id"`
+	ShortID          *int     `json:"short_id"`
 	DedupeConfidence *float64 `json:"dedupe_confidence"`
 	WorkspaceID      string   `json:"workspace_id"`
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
+}
+
+// BacklogListFilters are applied client-side after GET /api/backlog-items.
+type BacklogListFilters struct {
+	Status, Urgency, Importance, Category, Repo string
+	Search, Assignee                             string
+	Limit                                        int
+}
+
+func filterBacklogItemsCLI(items []BacklogItem, f BacklogListFilters) []BacklogItem {
+	search := strings.ToLower(strings.TrimSpace(f.Search))
+	var out []BacklogItem
+	for _, it := range items {
+		if f.Status != "" && it.Status != f.Status {
+			continue
+		}
+		if f.Urgency != "" && it.Urgency != f.Urgency {
+			continue
+		}
+		if f.Importance != "" && it.Importance != f.Importance {
+			continue
+		}
+		if f.Category != "" && it.Category != f.Category {
+			continue
+		}
+		if f.Repo != "" && (it.RepoName == nil || *it.RepoName != f.Repo) {
+			continue
+		}
+		if search != "" {
+			hay := strings.ToLower(it.Title + " " + it.Summary)
+			if !strings.Contains(hay, search) {
+				continue
+			}
+		}
+		if a := strings.TrimSpace(f.Assignee); a != "" && !strings.EqualFold(a, "self") {
+			if it.AssigneeID == nil || *it.AssigneeID != a {
+				continue
+			}
+		}
+		out = append(out, it)
+	}
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
+	return out
 }
 
 type TokenResponse struct {
@@ -340,22 +390,22 @@ func (c *Client) ListCaptures(opts ListCapturesOptions) ([]CaptureListItem, erro
 	return wrapper.Data, nil
 }
 
-func (c *Client) ListBacklogItems(status, urgency, importance, category, repo string) ([]BacklogItem, error) {
+func (c *Client) ListBacklogItems(f BacklogListFilters) ([]BacklogItem, error) {
 	params := url.Values{}
-	if status != "" {
-		params.Set("status", status)
+	if f.Status != "" {
+		params.Set("status", f.Status)
 	}
-	if urgency != "" {
-		params.Set("urgency", urgency)
+	if f.Urgency != "" {
+		params.Set("urgency", f.Urgency)
 	}
-	if importance != "" {
-		params.Set("importance", importance)
+	if f.Importance != "" {
+		params.Set("importance", f.Importance)
 	}
-	if category != "" {
-		params.Set("category", category)
+	if f.Category != "" {
+		params.Set("category", f.Category)
 	}
-	if repo != "" {
-		params.Set("repo_name", repo)
+	if f.Repo != "" {
+		params.Set("repo_name", f.Repo)
 	}
 
 	path := "/api/backlog-items"
@@ -374,7 +424,39 @@ func (c *Client) ListBacklogItems(status, urgency, importance, category, repo st
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	return wrapper.Data, nil
+	return filterBacklogItemsCLI(wrapper.Data, f), nil
+}
+
+var backlogKLRefPattern = regexp.MustCompile(`(?i)^#?KL-(\d+)$`)
+
+// ResolveBacklogItemRef maps a backlog UUID or KL-N reference to the item UUID (client-side scan).
+func (c *Client) ResolveBacklogItemRef(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("id is required")
+	}
+	if _, err := uuid.Parse(raw); err == nil {
+		return raw, nil
+	}
+	raw = strings.TrimPrefix(raw, "#")
+	m := backlogKLRefPattern.FindStringSubmatch(strings.TrimSpace(raw))
+	if len(m) != 2 {
+		return "", fmt.Errorf("invalid backlog id (use UUID or KL-<number>)")
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return "", fmt.Errorf("invalid backlog short id")
+	}
+	items, err := c.ListBacklogItems(BacklogListFilters{})
+	if err != nil {
+		return "", err
+	}
+	for _, it := range items {
+		if it.ShortID != nil && *it.ShortID == n {
+			return it.ID, nil
+		}
+	}
+	return "", fmt.Errorf("backlog item not found for %s", m[0])
 }
 
 func (c *Client) GetBacklogItem(id string) (*BacklogItem, error) {

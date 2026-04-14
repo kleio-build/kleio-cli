@@ -35,6 +35,7 @@ type RelationalCaptureCreateRequest struct {
 	Topics          []string             `json:"topics,omitempty"`
 	Checkpoint      *CheckpointWrite     `json:"checkpoint,omitempty"`
 	Decision        *DecisionWrite       `json:"decision,omitempty"`
+	BacklogItemID   string               `json:"backlog_item_id,omitempty"`
 }
 
 // DecisionWrite matches api/services.CaptureDecisionWrite JSON tags.

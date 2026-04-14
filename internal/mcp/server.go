@@ -47,6 +47,7 @@ type CheckpointInput struct {
 	Files              []string `json:"files,omitempty" jsonschema:"Changed file paths (checkpoint.files)"`
 	Caveats            []string `json:"caveats,omitempty" jsonschema:"Optional: caveat lines (repeat in array)"`
 	Deferred           []string `json:"deferred,omitempty" jsonschema:"Optional: deferred follow-up lines (repeat in array)"`
+	BacklogItemID      string   `json:"backlog_item_id,omitempty" jsonschema:"Optional: link checkpoint to backlog (UUID or KL-N); closes item when configured"`
 }
 
 type DecideInput struct {
@@ -61,11 +62,14 @@ type DecideInput struct {
 }
 
 type BacklogListInput struct {
-	Status     string `json:"status,omitempty" jsonschema:"Filter by status (new, reviewed, ready, done, ignored)"`
+	Status     string `json:"status,omitempty" jsonschema:"Filter by status (new, reviewed, ready, in_progress, done, ignored)"`
 	Urgency    string `json:"urgency,omitempty" jsonschema:"Filter by urgency (low, medium, high)"`
 	Importance string `json:"importance,omitempty" jsonschema:"Filter by importance (low, medium, high)"`
 	Category   string `json:"category,omitempty" jsonschema:"Filter by category"`
 	Repo       string `json:"repo,omitempty" jsonschema:"Filter by repository name"`
+	Search     string `json:"search,omitempty" jsonschema:"Substring match on title and summary"`
+	Assignee   string `json:"assignee,omitempty" jsonschema:"Assignee UUID filter, or self with an authenticated MCP session"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"Max items to return after filters (0 = no cap)"`
 }
 
 type BacklogShowInput struct {
@@ -73,10 +77,11 @@ type BacklogShowInput struct {
 }
 
 type BacklogPrioritizeInput struct {
-	ID         string `json:"id" jsonschema:"Backlog item ID"`
-	Urgency    string `json:"urgency,omitempty" jsonschema:"New urgency (low, medium, high)"`
-	Importance string `json:"importance,omitempty" jsonschema:"New importance (low, medium, high)"`
-	Status     string `json:"status,omitempty" jsonschema:"New status (new, reviewed, ready, done, ignored)"`
+	ID          string `json:"id" jsonschema:"Backlog item ID (UUID or KL-N)"`
+	Urgency     string `json:"urgency,omitempty" jsonschema:"New urgency (low, medium, high)"`
+	Importance  string `json:"importance,omitempty" jsonschema:"New importance (low, medium, high)"`
+	Status      string `json:"status,omitempty" jsonschema:"New status (includes in_progress)"`
+	AssigneeID  string `json:"assignee_id,omitempty" jsonschema:"UUID, self, none, or clear"`
 }
 
 type AskInput struct {
@@ -123,9 +128,11 @@ const kleioInstructions = `Kleio records durable engineering signals. You have t
 
 2. kleio_decide — relational decision path. Call when you commit to a direction after comparing alternatives. Required: content, rationale, confidence (low/medium/high). Include alternatives when they exist.
 
-3. kleio_checkpoint — relational checkpoint path. Record what was implemented in a meaningful slice: validation status, files changed, optional caveats/deferred. Required: content, slice_category, slice_status, validation_status.
+3. kleio_checkpoint — relational checkpoint path. Record what was implemented in a meaningful slice: validation status, files changed, optional caveats/deferred. Required: content, slice_category, slice_status, validation_status. Optional: backlog_item_id (UUID or KL-N) to link and close the backlog item.
 
-Read tools: kleio_backlog_list, kleio_backlog_show. Triage tool: kleio_backlog_prioritize (set urgency, importance, status). Query tool: kleio_ask — ask questions about engineering history and get AI-synthesized answers with sources.
+Read tools: kleio_backlog_list (filters: search, assignee including self, limit), kleio_backlog_show (UUID or KL-N). Triage: kleio_backlog_prioritize (urgency, importance, status, assignee_id self/none/UUID). Query: kleio_ask.
+
+Platform: high-confidence semantic links from checkpoints or merged PRs (>=0.90) and explicit KL-N references in commit messages can auto-close open backlog items.
 
 RULES:
 - If you choose a non-trivial direction, log it with kleio_decide BEFORE implementing.
@@ -150,7 +157,7 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_checkpoint",
-		Description: "Relational checkpoint path: POST /api/captures with nested checkpoint (implementation summary, provenance). Not for backlog synthesis. Required: content, slice_category, slice_status, validation_status.",
+		Description: "Relational checkpoint path: POST /api/captures with nested checkpoint (implementation summary, provenance). Not for backlog synthesis. Required: content, slice_category, slice_status, validation_status. Optional: backlog_item_id (UUID or KL-N).",
 	}, checkpointHandler(apiClient, session))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -160,17 +167,17 @@ func NewServer(apiClient *kleioclient.Client) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_list",
-		Description: "List synthesized backlog items with optional filters.",
+		Description: "List synthesized backlog items with optional filters (search, assignee including self when authenticated, limit, plus status/urgency/importance/category/repo).",
 	}, backlogListHandler(apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_show",
-		Description: "Show details of a specific backlog item.",
+		Description: "Show details of a specific backlog item (UUID or KL-N).",
 	}, backlogShowHandler(apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_prioritize",
-		Description: "Update the urgency, importance, and/or status of a backlog item.",
+		Description: "Update urgency, importance, status, and/or assignee_id (UUID, self, none, clear) of a backlog item (id UUID or KL-N).",
 	}, backlogPrioritizeHandler(apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -322,6 +329,9 @@ func checkpointHandler(c *kleioclient.Client, session *sessionState) func(ctx co
 		if input.FreeformContext != "" {
 			reqBody.FreeformContext = &input.FreeformContext
 		}
+		if bid := strings.TrimSpace(input.BacklogItemID); bid != "" {
+			reqBody.BacklogItemID = bid
+		}
 
 		data, err := c.CreateRelationalCapture(reqBody)
 		if err != nil {
@@ -407,7 +417,10 @@ func decideHandler(c *kleioclient.Client, session *sessionState) func(ctx contex
 
 func backlogListHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
-		items, err := c.ListBacklogItems(input.Status, input.Urgency, input.Importance, input.Category, input.Repo)
+		items, err := c.ListBacklogItems(kleioclient.BacklogListFilters{
+			Status: input.Status, Urgency: input.Urgency, Importance: input.Importance, Category: input.Category, Repo: input.Repo,
+			Search: input.Search, Assignee: input.Assignee, Limit: input.Limit,
+		})
 		if err != nil {
 			if r := authErrResult(err); r != nil {
 				return r, TextOutput{}, nil
@@ -424,7 +437,11 @@ func backlogShowHandler(c *kleioclient.Client) func(ctx context.Context, req *mc
 		if input.ID == "" {
 			return errResult("id is required"), TextOutput{}, nil
 		}
-		item, err := c.GetBacklogItem(input.ID)
+		resolved, err := c.ResolveBacklogItemRef(input.ID)
+		if err != nil {
+			return errResult(err.Error()), TextOutput{}, nil
+		}
+		item, err := c.GetBacklogItem(resolved)
 		if err != nil {
 			if r := authErrResult(err); r != nil {
 				return r, TextOutput{}, nil
@@ -452,11 +469,33 @@ func backlogPrioritizeHandler(c *kleioclient.Client) func(ctx context.Context, r
 		if input.Status != "" {
 			updates["status"] = input.Status
 		}
+		if aid := strings.TrimSpace(input.AssigneeID); aid != "" {
+			switch strings.ToLower(aid) {
+			case "none", "clear":
+				updates["assignee_id"] = nil
+			case "self":
+				me, merr := c.GetMeJSON()
+				if merr != nil {
+					return errResult("assignee_id self: could not load /api/me: " + merr.Error()), TextOutput{}, nil
+				}
+				uid, _ := me["id"].(string)
+				if strings.TrimSpace(uid) == "" {
+					return errResult("assignee_id self: user id not available from /api/me"), TextOutput{}, nil
+				}
+				updates["assignee_id"] = uid
+			default:
+				updates["assignee_id"] = aid
+			}
+		}
 		if len(updates) == 0 {
-			return errResult("Specify urgency, importance, and/or status to update"), TextOutput{}, nil
+			return errResult("Specify urgency, importance, status, and/or assignee_id to update"), TextOutput{}, nil
 		}
 
-		item, err := c.UpdateBacklogItem(input.ID, updates)
+		resolvedID, err := c.ResolveBacklogItemRef(input.ID)
+		if err != nil {
+			return errResult(err.Error()), TextOutput{}, nil
+		}
+		item, err := c.UpdateBacklogItem(resolvedID, updates)
 		if err != nil {
 			if r := authErrResult(err); r != nil {
 				return r, TextOutput{}, nil

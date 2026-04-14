@@ -30,6 +30,7 @@ func NewCheckpointCmd(getClient func() *client.Client) *cobra.Command {
 		caveats          []string
 		deferred         []string
 		asJSON           bool
+		backlogItemID    string
 	)
 
 	cmd := &cobra.Command{
@@ -104,6 +105,9 @@ Requires --slice-category, --slice-status, --validation-status. The positional a
 			if freeform != "" {
 				req.FreeformContext = &freeform
 			}
+			if backlogItemID != "" {
+				req.BacklogItemID = backlogItemID
+			}
 
 			data, err := getClient().CreateRelationalCapture(req)
 			if err != nil {
@@ -154,6 +158,7 @@ Requires --slice-category, --slice-status, --validation-status. The positional a
 	cmd.Flags().StringSliceVar(&caveats, "caveat", nil, "Caveat line (repeatable)")
 	cmd.Flags().StringSliceVar(&deferred, "deferred", nil, "Deferred follow-up line (repeatable)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print full capture detail JSON")
+	cmd.Flags().StringVar(&backlogItemID, "backlog-item-id", "", "Link to backlog item (UUID or KL-N); sent as backlog_item_id")
 
 	return cmd
 }
