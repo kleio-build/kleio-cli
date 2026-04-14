@@ -11,10 +11,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kleio-build/kleio-cli/internal/config"
 )
 
 // ErrAuthRequired is returned when authentication is needed but not configured.
-var ErrAuthRequired = errors.New("authentication required: run `kleio login` to authenticate, then restart the MCP server")
+var ErrAuthRequired = errors.New("authentication required: run `kleio login` to authenticate; the MCP server reloads ~/.kleio/config.yaml periodically, or restart MCP/Cursor to pick up tokens immediately")
 
 const defaultHTTPTimeout = 90 * time.Second
 
@@ -30,7 +32,7 @@ type Client struct {
 	workspaceID  string
 	httpClient   *http.Client
 
-	refreshMu      sync.Mutex
+	refreshMu      sync.RWMutex
 	onTokenRefresh OnTokenRefreshFunc
 }
 
@@ -76,12 +78,35 @@ func (c *Client) SetOnTokenRefresh(fn OnTokenRefreshFunc) {
 // workspace resolution chain when the workspace is determined dynamically
 // (e.g. from git remote or project config).
 func (c *Client) SetWorkspaceID(id string) {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
 	c.workspaceID = id
 }
 
 // WorkspaceID returns the currently configured workspace ID.
 func (c *Client) WorkspaceID() string {
+	c.refreshMu.RLock()
+	defer c.refreshMu.RUnlock()
 	return c.workspaceID
+}
+
+// ReloadFromConfig replaces in-memory credentials from a freshly loaded config file.
+// Returns true if any auth-related field changed. Workspace is only overwritten when
+// cfg.WorkspaceID is non-empty.
+func (c *Client) ReloadFromConfig(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	prevTok, prevRef, prevKey, prevWS := c.token, c.refreshToken, c.apiKey, c.workspaceID
+	c.token = strings.TrimSpace(cfg.Token)
+	c.refreshToken = strings.TrimSpace(cfg.RefreshToken)
+	c.apiKey = strings.TrimSpace(cfg.APIKey)
+	if ws := strings.TrimSpace(cfg.WorkspaceID); ws != "" {
+		c.workspaceID = ws
+	}
+	return c.token != prevTok || c.refreshToken != prevRef || c.apiKey != prevKey || c.workspaceID != prevWS
 }
 
 type CaptureInput struct {
@@ -505,7 +530,10 @@ func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	if statusCode == http.StatusUnauthorized && c.refreshToken != "" {
+	c.refreshMu.RLock()
+	hasRefresh := c.refreshToken != ""
+	c.refreshMu.RUnlock()
+	if statusCode == http.StatusUnauthorized && hasRefresh {
 		if refreshErr := c.tryRefresh(); refreshErr == nil {
 			respBody, statusCode, err = c.doRequestOnce(method, path, body)
 			if err != nil {
@@ -531,20 +559,27 @@ func (c *Client) doRequestOnce(method, path string, body []byte) ([]byte, int, e
 		bodyReader = bytes.NewReader(body)
 	}
 
-	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	c.refreshMu.RLock()
+	baseURL := c.baseURL
+	token := c.token
+	apiKey := c.apiKey
+	workspaceID := c.workspaceID
+	c.refreshMu.RUnlock()
+
+	req, err := http.NewRequest(method, baseURL+path, bodyReader)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	} else if c.apiKey != "" {
-		req.Header.Set("X-API-Key", c.apiKey)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
 	}
 
-	if c.workspaceID != "" {
-		req.Header.Set("X-Workspace-ID", c.workspaceID)
+	if workspaceID != "" {
+		req.Header.Set("X-Workspace-ID", workspaceID)
 	}
 
 	resp, err := c.httpClient.Do(req)

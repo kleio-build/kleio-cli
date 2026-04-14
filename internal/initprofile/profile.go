@@ -33,6 +33,7 @@ var (
 		"cursor/skills/kleio-checkpoint-logging/SKILL.md",
 		"cursor/skills/kleio-decision-logging/SKILL.md",
 		"cursor/mcp.json.example",
+		"cursor/hooks.json",
 	}
 
 	ClaudeFiles = []string{

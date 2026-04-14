@@ -87,6 +87,14 @@ Prefer **structured** fields (`slice_category`, `slice_status`, `validation_stat
 ### `kleio_session_summary`
 Call at natural breakpoints to check your logging behavior for the current session. Returns tool call tallies, captures logged, and nudges if decisions or checkpoints are missing.
 
+### Cursor lifecycle hooks (this repo)
+
+Project-level `.cursor/hooks.json` nudges agents at **sessionStart** (early Kleio MCP / auth check via `kleio_session_summary`) and **sessionEnd** (audit logging gaps before the session closes). Hooks ship with the repo so Kleio logging is harder to forget.
+
+### Kleio MCP auth after `kleio login`
+
+The `kleio mcp` process **polls `~/.kleio/config.yaml` about every 30 seconds** and reapplies tokens and workspace from disk, so you usually do **not** need to restart Cursor after logging in. If something still fails, restart the MCP server or the editor.
+
 ### `kleio_backlog_list` / `kleio_backlog_show`
 Use before creating a new durable work item if there is a meaningful chance it already exists.
 

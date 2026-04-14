@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/commands"
@@ -17,24 +18,74 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// newAuthenticatedClient builds an API client from a loaded disk config.
+func newAuthenticatedClient(cfg *config.Config) *client.Client {
+	var c *client.Client
+	if cfg.Token != "" {
+		c = client.NewWithTokens(cfg.APIURL, cfg.Token, cfg.RefreshToken, cfg.WorkspaceID)
+		c.SetOnTokenRefresh(func(newToken, newRefreshToken string) {
+			saved, _ := config.Load()
+			saved.Token = newToken
+			saved.RefreshToken = newRefreshToken
+			_ = config.Save(saved)
+		})
+	} else {
+		c = client.New(cfg.APIURL, cfg.APIKey, cfg.WorkspaceID)
+	}
+	if cfg.WorkspaceID == "" {
+		resolveWorkspace(c)
+	}
+	return c
+}
+
+// startMCPConfigReload polls ~/.kleio/config.yaml and reapplies credentials to the
+// running MCP client so `kleio login` does not require restarting Cursor.
+func startMCPConfigReload(c *client.Client) context.CancelFunc {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		path := config.DefaultPath()
+		var lastMod int64
+		check := func() {
+			st, err := os.Stat(path)
+			if err != nil {
+				return
+			}
+			mt := st.ModTime().UnixNano()
+			if lastMod != 0 && mt == lastMod {
+				return
+			}
+			lastMod = mt
+			next, err := config.Load()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "kleio mcp: config reload:", err)
+				return
+			}
+			if c.ReloadFromConfig(next) {
+				fmt.Fprintln(os.Stderr, "kleio mcp: reloaded API credentials from", path)
+				if strings.TrimSpace(next.WorkspaceID) == "" {
+					resolveWorkspace(c)
+				}
+			}
+		}
+		check()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				check()
+			}
+		}
+	}()
+	return cancel
+}
+
 func main() {
 	getClient := func() *client.Client {
 		cfg, _ := config.Load()
-		var c *client.Client
-		if cfg.Token != "" {
-			c = client.NewWithTokens(cfg.APIURL, cfg.Token, cfg.RefreshToken, cfg.WorkspaceID)
-			c.SetOnTokenRefresh(func(newToken, newRefreshToken string) {
-				cfg.Token = newToken
-				cfg.RefreshToken = newRefreshToken
-				_ = config.Save(cfg)
-			})
-		} else {
-			c = client.New(cfg.APIURL, cfg.APIKey, cfg.WorkspaceID)
-		}
-		if cfg.WorkspaceID == "" {
-			resolveWorkspace(c)
-		}
-		return c
+		return newAuthenticatedClient(cfg)
 	}
 
 	rootCmd := &cobra.Command{
@@ -62,8 +113,16 @@ func main() {
 		Long:         "Runs Kleio as a Model Context Protocol server over stdin/stdout for integration with AI editors like Cursor.",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			srv := kleiomcp.NewServer(getClient())
-			err := srv.Run(context.Background(), &mcp.StdioTransport{})
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			apiClient := newAuthenticatedClient(cfg)
+			stopReload := startMCPConfigReload(apiClient)
+			defer stopReload()
+
+			srv := kleiomcp.NewServer(apiClient)
+			err = srv.Run(context.Background(), &mcp.StdioTransport{})
 			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "EOF")) {
 				return nil
 			}

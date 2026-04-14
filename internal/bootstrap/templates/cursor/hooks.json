@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "prompt",
+        "prompt": "If Kleio MCP is enabled for this workspace, call kleio_session_summary once early in this session. If any Kleio tool returns an authentication error (e.g. run kleio login, restart MCP), tell the user immediately in plain language so they can fix it before doing more work.",
+        "timeout": 30
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "prompt",
+        "prompt": "Before this session ends, if Kleio MCP is enabled, call kleio_session_summary to check whether any non-trivial decisions, checkpoints, or follow-up work items were missed. If the summary reveals gaps, log them now with the appropriate Kleio tool (kleio_decide, kleio_checkpoint, or kleio_capture). If everything is covered or the session was trivial, do nothing.",
+        "timeout": 30
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "prompt",
+        "matcher": "mcp__*kleio*",
+        "prompt": "A Kleio MCP tool call just failed. If the error mentions authentication, login, or 401, tell the user: 'Kleio auth expired — run `kleio login` in a terminal. The MCP server will pick up the new tokens automatically within ~30 seconds.' Do not silently skip Kleio for the rest of the session.",
+        "timeout": 10
+      }
+    ]
+  }
+}
