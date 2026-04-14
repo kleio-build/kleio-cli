@@ -424,6 +424,16 @@ func (c *Client) ListBacklogItems(f BacklogListFilters) ([]BacklogItem, error) {
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
+
+	if strings.EqualFold(strings.TrimSpace(f.Assignee), "self") {
+		me, merr := c.GetMeJSON()
+		if merr == nil {
+			if uid, _ := me["id"].(string); strings.TrimSpace(uid) != "" {
+				f.Assignee = uid
+			}
+		}
+	}
+
 	return filterBacklogItemsCLI(wrapper.Data, f), nil
 }
 
