@@ -56,6 +56,7 @@ func TestReloadFromConfig_TrimsWhitespace(t *testing.T) {
 	c := NewWithTokens("http://localhost:8080", "old", "old-r", "ws")
 
 	changed := c.ReloadFromConfig(&config.Config{
+		APIURL:       "http://localhost:8080",
 		Token:        "  new-token  ",
 		RefreshToken: " new-ref ",
 		WorkspaceID:  " ws-2 ",
@@ -63,4 +64,32 @@ func TestReloadFromConfig_TrimsWhitespace(t *testing.T) {
 
 	require.True(t, changed)
 	require.Equal(t, "ws-2", c.WorkspaceID())
+}
+
+func TestReloadFromConfig_UpdatesBaseURL(t *testing.T) {
+	c := NewWithTokens("http://localhost:8080", "tok", "ref", "ws")
+
+	changed := c.ReloadFromConfig(&config.Config{
+		APIURL:       "https://api.example.com",
+		Token:        "tok",
+		RefreshToken: "ref",
+		WorkspaceID:  "ws",
+	})
+
+	require.True(t, changed)
+	require.Equal(t, "https://api.example.com", c.BaseURL())
+}
+
+func TestReloadFromConfig_SameBaseURLNotReported(t *testing.T) {
+	c := NewWithTokens("http://localhost:8080", "tok", "ref", "ws")
+
+	changed := c.ReloadFromConfig(&config.Config{
+		APIURL:       "http://localhost:8080",
+		Token:        "tok",
+		RefreshToken: "ref",
+		WorkspaceID:  "ws",
+	})
+
+	require.False(t, changed)
+	require.Equal(t, "http://localhost:8080", c.BaseURL())
 }

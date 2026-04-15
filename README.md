@@ -112,6 +112,18 @@ kleio config set workspace-id <uuid>  # or pick during kleio login / kleio init 
 kleio config show                     # secrets are redacted
 ```
 
+### API environment
+
+With no config file, the CLI targets **production** (`https://api.kleio.build`). Switch presets with:
+
+```bash
+kleio config use production   # default API host
+kleio config use staging      # https://api.dev.kleio.build
+kleio config use local        # http://localhost:8080 + dev API key for local stack
+```
+
+Each environment keeps its own credentials in `~/.kleio/environments/<env>.yaml`, so switching is instant — no re-login required after the first `kleio login` per environment. Override for one-off commands: `KLEIO_ENV=staging` or `KLEIO_API_URL=https://...`.
+
 ## Configuration check (`kleio status`)
 
 Validates local config, API health, authentication, and workspace-scoped **counts** (`GET /api/workspace/counts`). Prints an informational **MCP** section (never fails the command). Use `--json` to print only the raw workspace counts JSON.
@@ -153,8 +165,9 @@ The MCP server resolves the workspace once at startup based on the editor's work
 ## CLI usage
 
 ```bash
-# Configure
-kleio config set api-url http://localhost:8080
+# Configure (defaults target production; use local stack:)
+kleio config use local
+# or: kleio config set api-url http://localhost:8080
 kleio config set api-key your-api-key
 
 # Capture work items
@@ -186,13 +199,14 @@ Use the **`kleio` binary** with the `mcp` subcommand (stdio transport). Add to `
       "command": "kleio",
       "args": ["mcp"],
       "env": {
-        "KLEIO_API_URL": "http://localhost:8080",
-        "KLEIO_API_KEY": "your-api-key"
+        "KLEIO_ENV": "local"
       }
     }
   }
 }
 ```
+
+With no `env` block, the CLI defaults to production. For a custom host only, you can set `KLEIO_API_URL` / `KLEIO_API_KEY` instead. The `kleio mcp` process reloads `~/.kleio/config.yaml` about every 30s (credentials and API URL).
 
 ### Available tools
 

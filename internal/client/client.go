@@ -93,8 +93,15 @@ func (c *Client) WorkspaceID() string {
 	return c.workspaceID
 }
 
-// ReloadFromConfig replaces in-memory credentials from a freshly loaded config file.
-// Returns true if any auth-related field changed. Workspace is only overwritten when
+// BaseURL returns the API base URL (for tests and diagnostics).
+func (c *Client) BaseURL() string {
+	c.refreshMu.RLock()
+	defer c.refreshMu.RUnlock()
+	return c.baseURL
+}
+
+// ReloadFromConfig replaces in-memory credentials and base URL from a freshly loaded config file.
+// Returns true if any auth-related field or base URL changed. Workspace is only overwritten when
 // cfg.WorkspaceID is non-empty.
 func (c *Client) ReloadFromConfig(cfg *config.Config) bool {
 	if cfg == nil {
@@ -102,14 +109,18 @@ func (c *Client) ReloadFromConfig(cfg *config.Config) bool {
 	}
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
-	prevTok, prevRef, prevKey, prevWS := c.token, c.refreshToken, c.apiKey, c.workspaceID
+	prevTok, prevRef, prevKey, prevWS, prevBase := c.token, c.refreshToken, c.apiKey, c.workspaceID, c.baseURL
 	c.token = strings.TrimSpace(cfg.Token)
 	c.refreshToken = strings.TrimSpace(cfg.RefreshToken)
 	c.apiKey = strings.TrimSpace(cfg.APIKey)
+	c.baseURL = strings.TrimSpace(cfg.APIURL)
+	if c.baseURL == "" {
+		c.baseURL = prevBase
+	}
 	if ws := strings.TrimSpace(cfg.WorkspaceID); ws != "" {
 		c.workspaceID = ws
 	}
-	return c.token != prevTok || c.refreshToken != prevRef || c.apiKey != prevKey || c.workspaceID != prevWS
+	return c.token != prevTok || c.refreshToken != prevRef || c.apiKey != prevKey || c.workspaceID != prevWS || c.baseURL != prevBase
 }
 
 type CaptureInput struct {

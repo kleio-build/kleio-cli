@@ -38,30 +38,37 @@ func newAuthenticatedClient(cfg *config.Config) *client.Client {
 	return c
 }
 
-// startMCPConfigReload polls ~/.kleio/config.yaml and reapplies credentials to the
-// running MCP client so `kleio login` does not require restarting Cursor.
+// startMCPConfigReload polls config files (pointer, environment file, legacy
+// config.yaml) and reapplies credentials + base URL to the running MCP client
+// so `kleio login` or `kleio config use` take effect without restarting Cursor.
 func startMCPConfigReload(c *client.Client) context.CancelFunc {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		path := config.DefaultPath()
-		var lastMod int64
+		var lastMaxMod int64
+		maxMod := func() int64 {
+			var m int64
+			for _, p := range config.WatchPaths() {
+				if st, err := os.Stat(p); err == nil {
+					if t := st.ModTime().UnixNano(); t > m {
+						m = t
+					}
+				}
+			}
+			return m
+		}
 		check := func() {
-			st, err := os.Stat(path)
-			if err != nil {
+			mm := maxMod()
+			if lastMaxMod != 0 && mm == lastMaxMod {
 				return
 			}
-			mt := st.ModTime().UnixNano()
-			if lastMod != 0 && mt == lastMod {
-				return
-			}
-			lastMod = mt
+			lastMaxMod = mm
 			next, err := config.Load()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "kleio mcp: config reload:", err)
 				return
 			}
 			if c.ReloadFromConfig(next) {
-				fmt.Fprintln(os.Stderr, "kleio mcp: reloaded API credentials from", path)
+				fmt.Fprintln(os.Stderr, "kleio mcp: reloaded config")
 				if strings.TrimSpace(next.WorkspaceID) == "" {
 					resolveWorkspace(c)
 				}
