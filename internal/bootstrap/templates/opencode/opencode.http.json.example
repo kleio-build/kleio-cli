@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "kleio-http": {
+      "type": "remote",
+      "url": "https://YOUR_KLEIO_API_HOST/api/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer YOUR_ACCESS_TOKEN",
+        "X-Workspace-ID": "YOUR_WORKSPACE_ID",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream"
+      }
+    }
+  }
+}

@@ -15,16 +15,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// InitFlags captures the resolved CLI flags for `kleio init`. Grouping them
+// keeps the runInit signature stable as we add programmatic-bootstrap fields
+// (used by kleio-eval to wire ephemeral workspaces non-interactively).
+type InitFlags struct {
+	Dir            string
+	DryRun         bool
+	YesNewOnly     bool
+	Interactive    bool
+	NonInteractive bool
+	ForceOverwrite bool
+	Tool           string
+	Surface        string
+	APIURL         string
+	WorkspaceID    string
+}
+
 func NewInitCmd(getClient func() *client.Client) *cobra.Command {
-	var (
-		dir            string
-		dryRun         bool
-		yesNewOnly     bool
-		interactive    bool
-		nonInteractive bool
-		forceOverwrite bool
-		tool           string
-	)
+	f := InitFlags{}
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -32,25 +40,116 @@ func NewInitCmd(getClient func() *client.Client) *cobra.Command {
 		Long: `Installs Kleio templates for your editor workflow.
 
 Use --interactive (-i) for the full wizard (tooling, optional sign-in, workspace).
-Use --non-interactive with --tool for CI (no prompts; writes sidecar files when paths exist).`,
+Use --non-interactive with --tool/--surface for CI or programmatic bootstrap
+(no prompts; writes sidecar files when paths exist).
+
+Programmatic bootstrap (used by kleio-eval and CI):
+  kleio init --non-interactive --surface cursor \
+             --api-url https://api.dev.kleio.build \
+             --workspace-id 0a1b2c3d-... \
+             --dir ./worktree`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if interactive && nonInteractive {
-				return fmt.Errorf("use either --interactive or --non-interactive, not both")
-			}
-			return runInit(dir, dryRun, yesNewOnly, interactive, nonInteractive, forceOverwrite, tool, getClient)
+			return runInit(f, getClient)
 		},
 	}
-	cmd.Flags().StringVar(&dir, "dir", ".", "project root to write files into")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print actions without writing files")
-	cmd.Flags().BoolVar(&yesNewOnly, "yes-new-only", false, "do not overwrite existing files; write kleio sidecar files instead")
-	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "run interactive wizard (tooling, auth, workspace)")
-	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "no prompts; requires --tool when the profile cannot be inferred")
-	cmd.Flags().BoolVar(&forceOverwrite, "force-overwrite", false, "overwrite existing files without prompting")
-	cmd.Flags().StringVar(&tool, "tool", "", "tool profile: cursor, claude, windsurf, copilot, codex, generic, none, all, or comma-separated (e.g. cursor,claude)")
+	cmd.Flags().StringVar(&f.Dir, "dir", ".", "project root to write files into")
+	cmd.Flags().BoolVar(&f.DryRun, "dry-run", false, "print actions without writing files")
+	cmd.Flags().BoolVar(&f.YesNewOnly, "yes-new-only", false, "do not overwrite existing files; write kleio sidecar files instead")
+	cmd.Flags().BoolVarP(&f.Interactive, "interactive", "i", false, "run interactive wizard (tooling, auth, workspace)")
+	cmd.Flags().BoolVar(&f.NonInteractive, "non-interactive", false, "no prompts; requires --tool/--surface when the profile cannot be inferred")
+	cmd.Flags().BoolVar(&f.ForceOverwrite, "force-overwrite", false, "overwrite existing files without prompting")
+	cmd.Flags().StringVar(&f.Tool, "tool", "", "tool profile: cursor, claude, windsurf, copilot, codex, opencode, generic, none, all, or comma-separated (e.g. cursor,claude)")
+	cmd.Flags().StringVar(&f.Surface, "surface", "", "alias of --tool used by kleio-eval (one of: cursor, claude, codex, windsurf, github, copilot, opencode, generic)")
+	cmd.Flags().StringVar(&f.APIURL, "api-url", "", "non-interactive: write this api_url to the active environment config")
+	cmd.Flags().StringVar(&f.WorkspaceID, "workspace-id", "", "non-interactive: write this workspace_id to the active environment config")
 	return cmd
 }
 
-func runInit(dir string, dryRun, yesNewOnly, interactive, nonInteractive, forceOverwrite bool, tool string, getClient func() *client.Client) error {
+// resolveSurfaceTool merges the legacy --tool flag and the new --surface alias.
+// If both are provided they must agree. The "github" surface is normalised to
+// "copilot" so existing initprofile.ID values still resolve.
+func resolveSurfaceTool(tool, surface string) (string, error) {
+	t := strings.TrimSpace(tool)
+	s := strings.TrimSpace(strings.ToLower(surface))
+	if s == "github" {
+		s = "copilot"
+	}
+	if t != "" && s != "" && !strings.EqualFold(t, s) {
+		return "", fmt.Errorf("conflicting --tool=%q and --surface=%q (use one)", t, s)
+	}
+	if t != "" {
+		return t, nil
+	}
+	return s, nil
+}
+
+// applyNonInteractiveOverrides writes --api-url and --workspace-id into the
+// active environment config so the rest of the flow (verify, MCP) sees them.
+// SC-INIT1 requires both to be present in true non-interactive mode if neither
+// is already configured; we don't enforce it here so callers can opt in to
+// partial overrides, but runInit gates required-field validation.
+func applyNonInteractiveOverrides(apiURL, workspaceID string) error {
+	if apiURL == "" && workspaceID == "" {
+		return nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if apiURL != "" {
+		cfg.APIURL = apiURL
+	}
+	if workspaceID != "" {
+		cfg.WorkspaceID = workspaceID
+	}
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	return nil
+}
+
+func runInit(f InitFlags, getClient func() *client.Client) error {
+	if f.Interactive && f.NonInteractive {
+		return fmt.Errorf("use either --interactive or --non-interactive, not both")
+	}
+	tool, err := resolveSurfaceTool(f.Tool, f.Surface)
+	if err != nil {
+		return err
+	}
+	if f.NonInteractive {
+		if err := applyNonInteractiveOverrides(f.APIURL, f.WorkspaceID); err != nil {
+			return err
+		}
+		if err := validateNonInteractiveFlags(tool, f.APIURL, f.WorkspaceID); err != nil {
+			return err
+		}
+	}
+	return runInitInner(f.Dir, f.DryRun, f.YesNewOnly, f.Interactive, f.NonInteractive, f.ForceOverwrite, tool, getClient)
+}
+
+// validateNonInteractiveFlags enforces SC-INIT1: a clear, non-zero error when
+// the operator forgot a required field. We only fail when nothing in the
+// resolved config covers the missing piece (env-var or pre-existing config can
+// substitute for the explicit flag, which lets CI prefer env vars when
+// preferred).
+func validateNonInteractiveFlags(tool, apiURL, workspaceID string) error {
+	if strings.TrimSpace(tool) == "" {
+		return fmt.Errorf("--non-interactive requires --tool or --surface (e.g. --surface cursor)")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.APIURL) == "" && strings.TrimSpace(apiURL) == "" {
+		return fmt.Errorf("--non-interactive requires --api-url (or KLEIO_API_URL / preset config)")
+	}
+	if strings.TrimSpace(cfg.WorkspaceID) == "" && strings.TrimSpace(workspaceID) == "" {
+		return fmt.Errorf("--non-interactive requires --workspace-id (or KLEIO_WORKSPACE_ID / preset config)")
+	}
+	return nil
+}
+
+func runInitInner(dir string, dryRun, yesNewOnly, interactive, nonInteractive, forceOverwrite bool, tool string, getClient func() *client.Client) error {
 	dir = filepath.Clean(dir)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("invalid --dir: %s", dir)
@@ -275,7 +374,7 @@ func resolveProfiles(dir string, interactive, nonInteractive bool, tool string, 
 	}
 	if nonInteractive {
 		if !hasProfileSignal(dir) {
-			return nil, fmt.Errorf("could not infer tool profile (no .cursor / .claude / .windsurf / .codex / marker files); pass --tool=cursor|claude|windsurf|copilot|codex|generic|none|all")
+			return nil, fmt.Errorf("could not infer tool profile (no .cursor / .claude / .windsurf / .codex / .opencode / marker files); pass --tool=cursor|claude|windsurf|copilot|codex|opencode|generic|none|all")
 		}
 		return []initprofile.ID{initprofile.Recommend(dir)}, nil
 	}
@@ -289,7 +388,9 @@ func hasProfileSignal(dir string) bool {
 	for _, s := range initprofile.DetectSignals(dir) {
 		if strings.HasPrefix(s, ".cursor/") || strings.HasPrefix(s, ".claude/") ||
 			strings.HasPrefix(s, ".windsurf/") || strings.HasPrefix(s, ".codex/") ||
-			s == "CLAUDE.md" || s == ".github/copilot-instructions.md" {
+			strings.HasPrefix(s, ".opencode/") ||
+			s == "CLAUDE.md" || s == ".github/copilot-instructions.md" ||
+			s == "opencode.json" {
 			return true
 		}
 	}
@@ -305,7 +406,7 @@ func promptToolProfile(dir string, r *bufio.Reader) ([]initprofile.ID, error) {
 		fmt.Println("We could not infer your editor from the repo.")
 		fmt.Printf("Recommended tool profile: %s\n", rec)
 	}
-	fmt.Print("Which editor/tooling should Kleio install for? (cursor|claude|windsurf|copilot|codex|generic|none|all) [", rec, "]: ")
+	fmt.Print("Which editor/tooling should Kleio install for? (cursor|claude|windsurf|copilot|codex|opencode|generic|none|all) [", rec, "]: ")
 	line, err := r.ReadString('\n')
 	if err != nil {
 		return nil, err

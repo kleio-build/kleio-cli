@@ -16,6 +16,7 @@ const (
 	Windsurf ID = "windsurf"
 	Copilot  ID = "copilot"
 	Codex    ID = "codex"
+	OpenCode ID = "opencode"
 	Generic  ID = "generic"
 	None     ID = "none"
 	All      ID = "all"
@@ -61,6 +62,17 @@ var (
 		"codex/hooks.json",
 		"codex/hooks/kleio-session-check.sh",
 	}
+
+	// OpenCodeFiles target sst.dev OpenCode (TypeScript open-source agent).
+	// Dest paths land in the project root: opencode.json.example,
+	// opencode.http.json.example, opencode/hooks/..., AGENTS.opencode.md.
+	// OpenCode reads opencode.json from project root and ~/.config/opencode/.
+	OpenCodeFiles = []string{
+		"opencode/opencode.json.example",
+		"opencode/opencode.http.json.example",
+		"opencode/hooks/kleio-auth-check.sh",
+		"opencode/AGENTS.opencode.md",
+	}
 )
 
 // FilesFor returns template paths for a profile id.
@@ -85,6 +97,9 @@ func FilesFor(id ID) ([]string, error) {
 	case Codex:
 		out := append(append([]string{}, CommonFiles...), CodexFiles...)
 		return uniq(out), nil
+	case OpenCode:
+		out := append(append([]string{}, CommonFiles...), OpenCodeFiles...)
+		return uniq(out), nil
 	case All:
 		var out []string
 		out = append(out, CommonFiles...)
@@ -93,6 +108,7 @@ func FilesFor(id ID) ([]string, error) {
 		out = append(out, WindsurfFiles...)
 		out = append(out, CopilotFiles...)
 		out = append(out, CodexFiles...)
+		out = append(out, OpenCodeFiles...)
 		return uniq(out), nil
 	default:
 		return nil, fmt.Errorf("unknown profile: %s", id)
@@ -114,10 +130,10 @@ func ParseList(s string) ([]ID, error) {
 		}
 		id := ID(p)
 		switch id {
-		case Cursor, Claude, Windsurf, Copilot, Codex, Generic, None, All:
+		case Cursor, Claude, Windsurf, Copilot, Codex, OpenCode, Generic, None, All:
 			out = append(out, id)
 		default:
-			return nil, fmt.Errorf("unknown profile %q (valid: cursor, claude, windsurf, copilot, codex, generic, none, all)", p)
+			return nil, fmt.Errorf("unknown profile %q (valid: cursor, claude, windsurf, copilot, codex, opencode, generic, none, all)", p)
 		}
 	}
 	if len(out) == 0 {
@@ -136,7 +152,7 @@ func ExpandAll(ids []ID) []ID {
 		}
 	}
 	if hasAll {
-		return []ID{Cursor, Claude, Windsurf, Copilot, Codex}
+		return []ID{Cursor, Claude, Windsurf, Copilot, Codex, OpenCode}
 	}
 	return uniqID(ids)
 }
@@ -193,6 +209,19 @@ func uniqID(ids []ID) []ID {
 // EmbedToDestRel maps an embedded template path to the path written in the project tree.
 func EmbedToDestRel(embedRel string) string {
 	embedRel = filepath.ToSlash(embedRel)
+	// OpenCode is special: opencode reads opencode.json from the project root,
+	// not from a dot-folder, and AGENTS.opencode.md is a sidecar to AGENTS.md
+	// at the project root. Hooks live under .opencode/hooks/ for parity with
+	// .windsurf/hooks/, .claude/hooks/, etc.
+	if strings.HasPrefix(embedRel, "opencode/") {
+		rest := strings.TrimPrefix(embedRel, "opencode/")
+		switch {
+		case strings.HasPrefix(rest, "hooks/"):
+			return ".opencode/" + rest
+		default:
+			return rest
+		}
+	}
 	prefixes := []string{"cursor/", "claude/", "windsurf/", "github/", "codex/"}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(embedRel, prefix) {
@@ -263,19 +292,24 @@ func Recommend(root string) ID {
 			return Codex
 		}
 	}
+	for _, s := range signals {
+		if s == ".opencode/" || s == "opencode.json" {
+			return OpenCode
+		}
+	}
 	return Cursor
 }
 
 // DetectSignals mirrors init detection (dirs + marker files).
 func DetectSignals(root string) []string {
 	var out []string
-	candidates := []string{".cursor", ".claude", ".github", ".windsurf", ".codex"}
+	candidates := []string{".cursor", ".claude", ".github", ".windsurf", ".codex", ".opencode"}
 	for _, p := range candidates {
 		if st, err := statDir(root, p); err == nil && st {
 			out = append(out, p+"/")
 		}
 	}
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md"} {
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", "opencode.json"} {
 		if existsFile(root, name) {
 			out = append(out, name)
 		}

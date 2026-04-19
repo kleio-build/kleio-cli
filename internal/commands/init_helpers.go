@@ -98,8 +98,12 @@ func printNextSteps(ids []initprofile.ID, writtenDests []string, projectDir stri
 	if wants(initprofile.Codex) || installedCodexArtifacts(writtenDests) {
 		printCodexNextSteps()
 	}
+	if wants(initprofile.OpenCode) || installedOpenCodeArtifacts(writtenDests) {
+		printOpenCodeNextSteps()
+	}
 	if wants(initprofile.Generic) && !wants(initprofile.Cursor) && !wants(initprofile.Claude) &&
-		!wants(initprofile.Windsurf) && !wants(initprofile.Copilot) && !wants(initprofile.Codex) {
+		!wants(initprofile.Windsurf) && !wants(initprofile.Copilot) && !wants(initprofile.Codex) &&
+		!wants(initprofile.OpenCode) {
 		fmt.Println("  • Editor-agnostic: follow AGENTS.md (or AGENTS.kleio.md) and run `kleio` from your terminal; add Kleio to your editor later with `kleio init --tool=cursor`, `--tool=claude`, etc.")
 	}
 
@@ -168,6 +172,14 @@ func printCodexNextSteps() {
 	fmt.Println("    - Prefer Kleio HTTP MCP in Codex config for cloud or headless runners when supported.")
 }
 
+func printOpenCodeNextSteps() {
+	fmt.Println("  • OpenCode (sst.dev):")
+	fmt.Println("    - Merge `opencode.json.example` (local stdio) or `opencode.http.json.example` (HTTP) into `opencode.json` at your project root or `~/.config/opencode/opencode.json`.")
+	fmt.Println("    - Read `AGENTS.opencode.md` for Kleio agent guidance; merge into your `AGENTS.md` once you're happy with the wording.")
+	fmt.Println("    - Make `.opencode/hooks/kleio-auth-check.sh` executable (`chmod +x`) if you wire it into a shell pipeline that wraps OpenCode tool output.")
+	fmt.Println("    - Verify: run `opencode -p \"call kleio_status\"` (or your preferred non-interactive flag) and confirm Kleio MCP responds.")
+}
+
 func installedClaudeArtifacts(writtenDests []string) bool {
 	for _, p := range writtenDests {
 		s := filepathToSlash(p)
@@ -210,6 +222,17 @@ func installedCopilotArtifacts(writtenDests []string) bool {
 func installedCodexArtifacts(writtenDests []string) bool {
 	for _, p := range writtenDests {
 		if strings.Contains(filepathToSlash(p), ".codex/") {
+			return true
+		}
+	}
+	return false
+}
+
+func installedOpenCodeArtifacts(writtenDests []string) bool {
+	for _, p := range writtenDests {
+		s := filepathToSlash(p)
+		if strings.Contains(s, ".opencode/") || strings.Contains(s, "opencode.json.example") ||
+			strings.Contains(s, "AGENTS.opencode.md") || strings.Contains(s, "opencode.http.json.example") {
 			return true
 		}
 	}
