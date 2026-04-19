@@ -105,6 +105,7 @@ func main() {
 	rootCmd.AddCommand(commands.NewCaptureCmd(getClient))
 	rootCmd.AddCommand(commands.NewCheckpointCmd(getClient))
 	rootCmd.AddCommand(commands.NewBacklogCmd(getClient))
+	rootCmd.AddCommand(commands.NewQueryCmd(getClient))
 	rootCmd.AddCommand(commands.NewDecideCmd(getClient))
 	rootCmd.AddCommand(commands.NewConfigCmd())
 	rootCmd.AddCommand(commands.NewLoginCmd(getClient))

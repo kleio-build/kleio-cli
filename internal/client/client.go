@@ -552,6 +552,184 @@ func (c *Client) AskMemory(question string) (*MemoryQueryResult, error) {
 	return &wrapper.Data, nil
 }
 
+// MemoryCaptureHit is a single row returned by the read query endpoints
+// (search_captures / semantic_search). Mirrors the JSON shape produced by the
+// shared MemoryReadService.
+type MemoryCaptureHit struct {
+	CaptureID  string  `json:"capture_id"`
+	Content    string  `json:"content"`
+	SignalType string  `json:"signal_type"`
+	RepoName   string  `json:"repo_name,omitempty"`
+	BranchName string  `json:"branch_name,omitempty"`
+	FilePath   string  `json:"file_path,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+	Similarity float64 `json:"similarity,omitempty"`
+}
+
+type SearchCapturesQuery struct {
+	Since      string
+	Until      string
+	SignalType string
+	RepoName   string
+	Keyword    string
+	Limit      int
+}
+
+type SemanticSearchQuery struct {
+	Query string
+	Limit int
+}
+
+type SearchBacklogQuery struct {
+	Status     string
+	Category   string
+	Urgency    string
+	Importance string
+	Keyword    string
+	TicketID   string
+	RepoName   string
+	Limit      int
+}
+
+type MemoryBacklogHit struct {
+	ID         string  `json:"id"`
+	ShortID    *int    `json:"short_id,omitempty"`
+	Title      string  `json:"title"`
+	Summary    string  `json:"summary"`
+	Status     string  `json:"status"`
+	Category   string  `json:"category"`
+	Urgency    string  `json:"urgency"`
+	Importance string  `json:"importance"`
+	RepoName   string  `json:"repo_name,omitempty"`
+	AssigneeID *string `json:"assignee_id,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
+}
+
+type SearchCapturesResult struct {
+	Captures []MemoryCaptureHit `json:"captures"`
+	Note     string             `json:"note,omitempty"`
+}
+
+type SearchBacklogResult struct {
+	BacklogItems  []MemoryBacklogHit `json:"backlog_items"`
+	TotalReturned int                `json:"total_returned"`
+}
+
+// SearchCaptures hits GET /api/memory/captures.
+func (c *Client) SearchCaptures(q SearchCapturesQuery) (*SearchCapturesResult, error) {
+	params := url.Values{}
+	if q.Since != "" {
+		params.Set("since", q.Since)
+	}
+	if q.Until != "" {
+		params.Set("until", q.Until)
+	}
+	if q.SignalType != "" {
+		params.Set("signal_type", q.SignalType)
+	}
+	if q.RepoName != "" {
+		params.Set("repo_name", q.RepoName)
+	}
+	if q.Keyword != "" {
+		params.Set("keyword", q.Keyword)
+	}
+	if q.Limit > 0 {
+		params.Set("limit", strconv.Itoa(q.Limit))
+	}
+	path := "/api/memory/captures"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	resp, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out SearchCapturesResult
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &out, nil
+}
+
+// SemanticSearchCaptures hits GET /api/memory/semantic.
+func (c *Client) SemanticSearchCaptures(q SemanticSearchQuery) (*SearchCapturesResult, error) {
+	params := url.Values{}
+	params.Set("q", q.Query)
+	if q.Limit > 0 {
+		params.Set("limit", strconv.Itoa(q.Limit))
+	}
+	resp, err := c.doRequest("GET", "/api/memory/semantic?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	var out SearchCapturesResult
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &out, nil
+}
+
+// GetCaptureDetail hits GET /api/memory/captures/:id and returns the raw JSON
+// (the response shape is dynamic depending on which join rows exist).
+func (c *Client) GetCaptureDetail(captureID string) (json.RawMessage, error) {
+	if strings.TrimSpace(captureID) == "" {
+		return nil, fmt.Errorf("capture id is required")
+	}
+	return c.doRequest("GET", "/api/memory/captures/"+captureID, nil)
+}
+
+// SearchBacklogMemory hits GET /api/memory/backlog (the memory-read variant
+// distinct from ListBacklogItems which uses the canonical /api/backlog-items).
+func (c *Client) SearchBacklogMemory(q SearchBacklogQuery) (*SearchBacklogResult, error) {
+	params := url.Values{}
+	if q.Status != "" {
+		params.Set("status", q.Status)
+	}
+	if q.Category != "" {
+		params.Set("category", q.Category)
+	}
+	if q.Urgency != "" {
+		params.Set("urgency", q.Urgency)
+	}
+	if q.Importance != "" {
+		params.Set("importance", q.Importance)
+	}
+	if q.Keyword != "" {
+		params.Set("keyword", q.Keyword)
+	}
+	if q.TicketID != "" {
+		params.Set("ticket_id", q.TicketID)
+	}
+	if q.RepoName != "" {
+		params.Set("repo_name", q.RepoName)
+	}
+	if q.Limit > 0 {
+		params.Set("limit", strconv.Itoa(q.Limit))
+	}
+	path := "/api/memory/backlog"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	resp, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out SearchBacklogResult
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &out, nil
+}
+
+// GetBacklogDetail hits GET /api/memory/backlog/:id; id can be a UUID or KL-N.
+func (c *Client) GetBacklogDetail(id string) (json.RawMessage, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("backlog id is required")
+	}
+	return c.doRequest("GET", "/api/memory/backlog/"+id, nil)
+}
+
 // ADRFileInput represents a single ADR file to import.
 type ADRFileInput struct {
 	FilePath string `json:"file_path"`
