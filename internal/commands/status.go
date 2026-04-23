@@ -104,15 +104,27 @@ func NewStatusCmd(getClient func() *client.Client) *cobra.Command {
 				return nil
 			}
 
-			counts, err := cl.GetWorkspaceCounts()
-			if err != nil {
-				fmt.Printf("Workspace counts: failed (%v)\n", err)
-				fmt.Println("Status: not ready")
-				os.Exit(1)
-			}
+		counts, err := cl.GetWorkspaceCounts()
+		if err != nil {
+			fmt.Printf("Workspace counts: failed (%v)\n", err)
+			fmt.Println("Status: not ready")
+			os.Exit(1)
+		}
 
-			fmt.Println()
-			fmt.Println("Workspace summary")
+		// Webhook health is best-effort: 403 (non-admin) or 404 (older API)
+		// must not fail status. Only print the warning line when the count
+		// is positive -- silence on a clean DB is the success signal per the
+		// plan ("silent when 0").
+		if health, healthErr := cl.GetWebhookHealth(); healthErr == nil && health.Failures24h > 0 {
+			suffix := ""
+			if health.OldestUnresolvedAt != nil {
+				suffix = " (oldest unresolved: " + *health.OldestUnresolvedAt + ")"
+			}
+			fmt.Printf("WARNING: Webhook failures (24h): %d%s\n", health.Failures24h, suffix)
+		}
+
+		fmt.Println()
+		fmt.Println("Workspace summary")
 			fmt.Printf("  id:     %s\n", counts.WorkspaceID)
 			if counts.WorkspaceName != "" {
 				fmt.Printf("  name:   %s\n", counts.WorkspaceName)
