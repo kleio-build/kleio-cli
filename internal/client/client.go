@@ -905,3 +905,23 @@ func (c *Client) tryRefresh() error {
 
 	return nil
 }
+
+// Check runs a diff change analysis against the workspace's captured history.
+func (c *Client) Check(repo, base, diff, mode string) (json.RawMessage, error) {
+	payload := map[string]string{
+		"diff": diff,
+		"mode": mode,
+	}
+	if repo != "" {
+		payload["repo"] = repo
+	}
+	if base != "" {
+		payload["base"] = base
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := c.doRequest("POST", "/api/check", body)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(resp), nil
+}
