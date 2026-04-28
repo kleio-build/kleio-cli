@@ -7,6 +7,7 @@ import (
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/gitreader"
+	"github.com/kleio-build/kleio-cli/internal/privacy"
 	"github.com/spf13/cobra"
 )
 
@@ -155,6 +156,7 @@ func startsWith(s, prefix string) bool {
 }
 
 func runImport(getClient func() *client.Client, result *gitreader.ScanResult, repoName string, dryRun bool) error {
+	pf := privacy.NewFilter(privacy.DefaultRules())
 	if len(result.Tasks) == 0 {
 		fmt.Println("No tasks to import.")
 		return nil
@@ -175,7 +177,7 @@ func runImport(getClient func() *client.Client, result *gitreader.ScanResult, re
 	c := getClient()
 	imported := 0
 	for _, t := range result.Tasks {
-		content := t.Summary
+		content := pf.Redact(t.Summary)
 		if len(t.Tickets) > 0 {
 			content += " [" + joinStrings(t.Tickets, ", ") + "]"
 		}
