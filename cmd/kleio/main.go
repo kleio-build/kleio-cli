@@ -12,6 +12,8 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/commands"
 	"github.com/kleio-build/kleio-cli/internal/config"
 	"github.com/kleio-build/kleio-cli/internal/gitowner"
+	"github.com/kleio-build/kleio-cli/internal/cursorimport"
+	"github.com/kleio-build/kleio-cli/internal/fswatcher"
 	kleiomcp "github.com/kleio-build/kleio-cli/internal/mcp"
 	"github.com/kleio-build/kleio-cli/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -131,8 +133,17 @@ func main() {
 			stopReload := startMCPConfigReload(apiClient)
 			defer stopReload()
 
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			watchCfg := fswatcher.LoadWatchConfig()
+			if watchCfg.Enabled && watchCfg.HasSource("cursor") {
+				stopWatch := startWatchEngine(ctx, apiClient)
+				defer stopWatch()
+			}
+
 			srv := kleiomcp.NewServer(apiClient)
-			err = srv.Run(context.Background(), &mcp.StdioTransport{})
+			err = srv.Run(ctx, &mcp.StdioTransport{})
 			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "EOF")) {
 				return nil
 			}
@@ -172,4 +183,32 @@ func resolveWorkspace(c *client.Client) {
 	if projCfg := config.LoadProject(wd); projCfg != nil && projCfg.WorkspaceID != "" {
 		c.SetWorkspaceID(projCfg.WorkspaceID)
 	}
+}
+
+// startWatchEngine runs the watch engine as a background goroutine.
+// Returns a cancel function to stop it.
+func startWatchEngine(ctx context.Context, apiClient *client.Client) context.CancelFunc {
+	watchCtx, cancel := context.WithCancel(ctx)
+
+	engine := fswatcher.NewWatchEngine(func(signals []cursorimport.Signal) error {
+		for _, sig := range signals {
+			input := &client.CaptureInput{
+				Content:    sig.Content,
+				SignalType: sig.SignalType,
+				SourceType: "cursor_watch",
+			}
+			if _, err := apiClient.CreateCapture(input); err != nil {
+				fmt.Fprintf(os.Stderr, "kleio watch: capture failed: %v\n", err)
+			}
+		}
+		return nil
+	})
+
+	go func() {
+		if err := engine.Run(watchCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "kleio watch: %v\n", err)
+		}
+	}()
+
+	return cancel
 }
