@@ -2,18 +2,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/commands"
 	"github.com/kleio-build/kleio-cli/internal/config"
-	"github.com/kleio-build/kleio-cli/internal/gitowner"
 	"github.com/kleio-build/kleio-cli/internal/cursorimport"
 	"github.com/kleio-build/kleio-cli/internal/fswatcher"
+	"github.com/kleio-build/kleio-cli/internal/gitowner"
 	kleiomcp "github.com/kleio-build/kleio-cli/internal/mcp"
 	"github.com/kleio-build/kleio-cli/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -192,11 +194,7 @@ func startWatchEngine(ctx context.Context, apiClient *client.Client) context.Can
 
 	engine := fswatcher.NewWatchEngine(func(signals []cursorimport.Signal) error {
 		for _, sig := range signals {
-			input := &client.CaptureInput{
-				Content:    sig.Content,
-				SignalType: sig.SignalType,
-				SourceType: "cursor_watch",
-			}
+			input := buildWatchCaptureInput(sig)
 			if _, err := apiClient.CreateCapture(input); err != nil {
 				fmt.Fprintf(os.Stderr, "kleio watch: capture failed: %v\n", err)
 			}
@@ -211,4 +209,29 @@ func startWatchEngine(ctx context.Context, apiClient *client.Client) context.Can
 	}()
 
 	return cancel
+}
+
+func buildWatchCaptureInput(sig cursorimport.Signal) *client.CaptureInput {
+	sd := map[string]interface{}{
+		"ingest_source": "cursor_watch",
+		"signal_hash":   sig.Hash(),
+	}
+	if sig.SourceFile != "" {
+		sd["file"] = sig.SourceFile
+	}
+	sdJSON, _ := json.Marshal(sd)
+	sdStr := string(sdJSON)
+
+	provenance := "Observed from Cursor agent transcript (live watch)"
+	if sig.SourceFile != "" {
+		provenance += " (" + filepath.Base(sig.SourceFile) + ")"
+	}
+
+	return &client.CaptureInput{
+		Content:         sig.Content,
+		SignalType:      sig.SignalType,
+		SourceType:      "cli",
+		StructuredData:  &sdStr,
+		FreeformContext: &provenance,
+	}
 }
