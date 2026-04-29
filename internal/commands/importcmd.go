@@ -17,6 +17,7 @@ func NewImportCmd(getClient func() *client.Client) *cobra.Command {
 	}
 
 	cmd.AddCommand(newImportADRCmd(getClient))
+	cmd.AddCommand(newImportCursorCmd(getClient))
 	return cmd
 }
 
