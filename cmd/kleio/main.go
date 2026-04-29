@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/commands"
 	"github.com/kleio-build/kleio-cli/internal/config"
+	"github.com/kleio-build/kleio-cli/internal/cursorimport"
+	"github.com/kleio-build/kleio-cli/internal/fswatcher"
 	"github.com/kleio-build/kleio-cli/internal/gitowner"
 	kleiomcp "github.com/kleio-build/kleio-cli/internal/mcp"
 	"github.com/kleio-build/kleio-cli/internal/version"
@@ -131,8 +135,17 @@ func main() {
 			stopReload := startMCPConfigReload(apiClient)
 			defer stopReload()
 
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			watchCfg := fswatcher.LoadWatchConfig()
+			if watchCfg.Enabled && watchCfg.HasSource("cursor") {
+				stopWatch := startWatchEngine(ctx, apiClient)
+				defer stopWatch()
+			}
+
 			srv := kleiomcp.NewServer(apiClient)
-			err = srv.Run(context.Background(), &mcp.StdioTransport{})
+			err = srv.Run(ctx, &mcp.StdioTransport{})
 			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "EOF")) {
 				return nil
 			}
@@ -171,5 +184,54 @@ func resolveWorkspace(c *client.Client) {
 	// 2. Project config: .kleio/config.yaml in project root or ancestor.
 	if projCfg := config.LoadProject(wd); projCfg != nil && projCfg.WorkspaceID != "" {
 		c.SetWorkspaceID(projCfg.WorkspaceID)
+	}
+}
+
+// startWatchEngine runs the watch engine as a background goroutine.
+// Returns a cancel function to stop it.
+func startWatchEngine(ctx context.Context, apiClient *client.Client) context.CancelFunc {
+	watchCtx, cancel := context.WithCancel(ctx)
+
+	engine := fswatcher.NewWatchEngine(func(signals []cursorimport.Signal) error {
+		for _, sig := range signals {
+			input := buildWatchCaptureInput(sig)
+			if _, err := apiClient.CreateCapture(input); err != nil {
+				fmt.Fprintf(os.Stderr, "kleio watch: capture failed: %v\n", err)
+			}
+		}
+		return nil
+	})
+
+	go func() {
+		if err := engine.Run(watchCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "kleio watch: %v\n", err)
+		}
+	}()
+
+	return cancel
+}
+
+func buildWatchCaptureInput(sig cursorimport.Signal) *client.CaptureInput {
+	sd := map[string]interface{}{
+		"ingest_source": "cursor_watch",
+		"signal_hash":   sig.Hash(),
+	}
+	if sig.SourceFile != "" {
+		sd["file"] = sig.SourceFile
+	}
+	sdJSON, _ := json.Marshal(sd)
+	sdStr := string(sdJSON)
+
+	provenance := "Observed from Cursor agent transcript (live watch)"
+	if sig.SourceFile != "" {
+		provenance += " (" + filepath.Base(sig.SourceFile) + ")"
+	}
+
+	return &client.CaptureInput{
+		Content:         sig.Content,
+		SignalType:      sig.SignalType,
+		SourceType:      "cli",
+		StructuredData:  &sdStr,
+		FreeformContext: &provenance,
 	}
 }

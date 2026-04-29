@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,11 +102,7 @@ Examples:
 			imported := 0
 			for _, sig := range newSignals {
 				content := pf.Redact(sig.Content)
-				input := &client.CaptureInput{
-					Content:    content,
-					SignalType: sig.SignalType,
-					SourceType: "cursor_transcript",
-				}
+				input := buildCursorCaptureInput(sig, content)
 				_, err := c.CreateCapture(input)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to import signal: %v\n", err)
@@ -139,4 +136,29 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func buildCursorCaptureInput(sig cursorimport.Signal, redactedContent string) *client.CaptureInput {
+	sd := map[string]interface{}{
+		"ingest_source": "cursor_transcript",
+		"signal_hash":   sig.Hash(),
+	}
+	if sig.SourceFile != "" {
+		sd["file"] = sig.SourceFile
+	}
+	sdJSON, _ := json.Marshal(sd)
+	sdStr := string(sdJSON)
+
+	provenance := "Imported from Cursor agent transcript"
+	if sig.SourceFile != "" {
+		provenance += " (" + filepath.Base(sig.SourceFile) + ")"
+	}
+
+	return &client.CaptureInput{
+		Content:         redactedContent,
+		SignalType:      sig.SignalType,
+		SourceType:      "cli",
+		StructuredData:  &sdStr,
+		FreeformContext: &provenance,
+	}
 }

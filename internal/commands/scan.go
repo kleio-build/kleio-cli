@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kleio-build/kleio-cli/internal/client"
@@ -182,13 +184,8 @@ func runImport(getClient func() *client.Client, result *gitreader.ScanResult, re
 			content += " [" + joinStrings(t.Tickets, ", ") + "]"
 		}
 
-		input := &client.CaptureInput{
-			Content:    content,
-			SignalType: "work_item",
-		}
-		if repoName != "" {
-			input.RepoName = &repoName
-		}
+		input := buildScanCaptureInput(t, content, repoName)
+
 
 		_, err := c.CreateCapture(input)
 		if err != nil {
@@ -211,4 +208,59 @@ func joinStrings(ss []string, sep string) string {
 		result += s
 	}
 	return result
+}
+
+func buildScanCaptureInput(task gitreader.Task, content, repoName string) *client.CaptureInput {
+	var shas []string
+	for _, c := range task.Commits {
+		if c.Hash != "" {
+			shas = append(shas, c.Hash)
+		}
+	}
+
+	sd := map[string]interface{}{
+		"ingest_source": "local_git",
+	}
+	if len(shas) == 1 {
+		sd["commit_sha"] = shas[0]
+	} else if len(shas) > 1 {
+		sd["commit_shas"] = shas
+	}
+	if task.Branch != "" {
+		sd["branch"] = task.Branch
+	}
+	sdJSON, _ := json.Marshal(sd)
+	sdStr := string(sdJSON)
+
+	provenance := "Imported from local git history"
+	if task.Branch != "" {
+		provenance += " (branch: " + task.Branch + ")"
+	}
+	if len(shas) > 0 {
+		provenance += " — " + strings.Join(abbreviateSHAs(shas), ", ")
+	}
+
+	input := &client.CaptureInput{
+		Content:         content,
+		SignalType:      "work_item",
+		SourceType:      "cli",
+		StructuredData:  &sdStr,
+		FreeformContext: &provenance,
+	}
+	if repoName != "" {
+		input.RepoName = &repoName
+	}
+	return input
+}
+
+func abbreviateSHAs(shas []string) []string {
+	out := make([]string, len(shas))
+	for i, s := range shas {
+		if len(s) > 8 {
+			out[i] = s[:8]
+		} else {
+			out[i] = s
+		}
+	}
+	return out
 }
