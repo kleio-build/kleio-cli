@@ -154,7 +154,7 @@ func buildCursorEvent(sig cursorimport.Signal, redactedContent string) *kleio.Ev
 	return &kleio.Event{
 		Content:         redactedContent,
 		SignalType:      sig.SignalType,
-		SourceType:      kleio.SourceTypeCLI,
+		SourceType:      kleio.SourceTypeCursorTranscript,
 		StructuredData:  string(sdJSON),
 		FreeformContext: provenance,
 	}

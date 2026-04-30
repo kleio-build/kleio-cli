@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 
 	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/client"
+	"github.com/kleio-build/kleio-cli/internal/indexer"
 	"github.com/spf13/cobra"
 )
 
@@ -17,8 +19,46 @@ func NewImportCmd(getStore func() kleio.Store, getClient func() *client.Client) 
 		Short: "Import external data into Kleio",
 	}
 
+	cmd.AddCommand(newImportGitCmd())
 	cmd.AddCommand(newImportADRCmd(getClient))
 	cmd.AddCommand(newImportCursorCmd(getStore))
+	return cmd
+}
+
+func newImportGitCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "git [path]",
+		Short: "Import git history into the local Kleio database",
+		Long: `Walks the git history of the current (or given) repository and indexes
+all commits, file changes, and identifiers (tickets, PRs, tags) into the
+local .kleio/kleio.db. Re-running is incremental: only new commits are added.
+
+Examples:
+  kleio import git              # import current repo
+  kleio import git ../other-repo`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoPath := "."
+			if len(args) > 0 {
+				repoPath = args[0]
+			}
+
+			store, err := resolveLocalDBStore()
+			if err != nil {
+				return fmt.Errorf("open local store: %w", err)
+			}
+			defer store.Close()
+
+			idx := indexer.NewGitIndexer(store)
+			result, err := idx.Index(context.Background(), repoPath)
+			if err != nil {
+				return fmt.Errorf("import failed: %w", err)
+			}
+
+			printIndexResult(result)
+			return nil
+		},
+	}
 	return cmd
 }
 

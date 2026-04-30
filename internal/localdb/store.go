@@ -37,8 +37,8 @@ func (s *Store) CreateEvent(ctx context.Context, e *kleio.Event) error {
 	if e.AuthorType == "" {
 		e.AuthorType = kleio.AuthorTypeHuman
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO events (id, signal_type, content, source_type, created_at,
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO events (id, signal_type, content, source_type, created_at,
 		    repo_name, branch_name, file_path, freeform_context, structured_data,
 		    author_type, author_label, synced)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
@@ -47,6 +47,16 @@ func (s *Store) CreateEvent(ctx context.Context, e *kleio.Event) error {
 		nullStr(e.FreeformContext), nullStr(e.StructuredData),
 		e.AuthorType, nullStr(e.AuthorLabel),
 	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO events_fts (event_id, content, freeform_context) VALUES (?, ?, ?)`,
+		e.ID, e.Content, e.FreeformContext)
 	return err
 }
 
@@ -76,41 +86,54 @@ func (s *Store) GetEvent(ctx context.Context, id string) (*kleio.Event, error) {
 func (s *Store) ListEvents(ctx context.Context, f kleio.EventFilter) ([]kleio.Event, error) {
 	var where []string
 	var args []interface{}
+	useFTS := f.ContentSearch != ""
 
 	if f.SignalType != "" {
-		where = append(where, "signal_type = ?")
+		where = append(where, "e.signal_type = ?")
 		args = append(args, f.SignalType)
 	}
 	if f.SourceType != "" {
-		where = append(where, "source_type = ?")
+		where = append(where, "e.source_type = ?")
 		args = append(args, f.SourceType)
 	}
 	if f.RepoName != "" {
-		where = append(where, "repo_name = ?")
+		where = append(where, "e.repo_name = ?")
 		args = append(args, f.RepoName)
 	}
 	if f.AuthorType != "" {
-		where = append(where, "author_type = ?")
+		where = append(where, "e.author_type = ?")
 		args = append(args, f.AuthorType)
 	}
 	if f.CreatedAfter != "" {
-		where = append(where, "created_at > ?")
+		where = append(where, "e.created_at > ?")
 		args = append(args, f.CreatedAfter)
 	}
 	if f.CreatedBefore != "" {
-		where = append(where, "created_at < ?")
+		where = append(where, "e.created_at < ?")
 		args = append(args, f.CreatedBefore)
 	}
 
-	q := "SELECT id, signal_type, content, source_type, created_at, " +
-		"COALESCE(repo_name,''), COALESCE(branch_name,''), COALESCE(file_path,''), " +
-		"COALESCE(freeform_context,''), COALESCE(structured_data,''), " +
-		"COALESCE(author_type,'human'), COALESCE(author_label,''), synced " +
-		"FROM events"
+	cols := "e.id, e.signal_type, e.content, e.source_type, e.created_at, " +
+		"COALESCE(e.repo_name,''), COALESCE(e.branch_name,''), COALESCE(e.file_path,''), " +
+		"COALESCE(e.freeform_context,''), COALESCE(e.structured_data,''), " +
+		"COALESCE(e.author_type,'human'), COALESCE(e.author_label,''), e.synced"
+
+	var q string
+	if useFTS {
+		where = append(where, "events_fts MATCH ?")
+		args = append(args, tokenizeForFTS(f.ContentSearch))
+		q = "SELECT " + cols + " FROM events_fts f JOIN events e ON e.id = f.event_id"
+	} else {
+		q = "SELECT " + cols + " FROM events e"
+	}
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY created_at DESC"
+	if useFTS {
+		q += " ORDER BY rank"
+	} else {
+		q += " ORDER BY e.created_at DESC"
+	}
 	if f.Limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", f.Limit)
 	}
@@ -366,8 +389,18 @@ func (s *Store) QueryCommits(ctx context.Context, f kleio.CommitFilter) ([]kleio
 		args = append(args, f.AuthorName)
 	}
 	if f.MessageSearch != "" {
-		where = append(where, "c.message LIKE ?")
-		args = append(args, "%"+f.MessageSearch+"%")
+		words := splitSearchWords(f.MessageSearch)
+		if len(words) == 1 {
+			where = append(where, "c.message LIKE ?")
+			args = append(args, "%"+words[0]+"%")
+		} else {
+			var clauses []string
+			for _, w := range words {
+				clauses = append(clauses, "c.message LIKE ?")
+				args = append(args, "%"+w+"%")
+			}
+			where = append(where, "("+strings.Join(clauses, " OR ")+")")
+		}
 	}
 	if f.Since != "" {
 		where = append(where, "c.committed_at >= ?")
@@ -522,7 +555,6 @@ func (s *Store) FileHistory(ctx context.Context, path string) ([]kleio.FileChang
 // --- Search ---
 
 func (s *Store) Search(ctx context.Context, query string, opts kleio.SearchOpts) ([]kleio.SearchResult, error) {
-	pattern := "%" + query + "%"
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20
@@ -530,22 +562,29 @@ func (s *Store) Search(ctx context.Context, query string, opts kleio.SearchOpts)
 
 	var results []kleio.SearchResult
 
-	// Search events
-	eventArgs := []interface{}{pattern, pattern}
-	eventWhere := "(content LIKE ? OR freeform_context LIKE ?)"
+	// Search events via FTS5
+	ftsQuery := tokenizeForFTS(query)
+	var eventWhere []string
+	eventArgs := []interface{}{ftsQuery}
 	if opts.RepoName != "" {
-		eventWhere += " AND repo_name = ?"
+		eventWhere = append(eventWhere, "e.repo_name = ?")
 		eventArgs = append(eventArgs, opts.RepoName)
 	}
 	if opts.SignalType != "" {
-		eventWhere += " AND signal_type = ?"
+		eventWhere = append(eventWhere, "e.signal_type = ?")
 		eventArgs = append(eventArgs, opts.SignalType)
 	}
 	eventArgs = append(eventArgs, limit)
 
-	eRows, err := s.db.QueryContext(ctx,
-		"SELECT id, content, COALESCE(repo_name,''), COALESCE(file_path,''), signal_type, created_at "+
-			"FROM events WHERE "+eventWhere+" ORDER BY created_at DESC LIMIT ?", eventArgs...)
+	eq := "SELECT e.id, e.content, COALESCE(e.repo_name,''), COALESCE(e.file_path,''), e.signal_type, e.created_at " +
+		"FROM events_fts f JOIN events e ON e.id = f.event_id " +
+		"WHERE events_fts MATCH ?"
+	for _, w := range eventWhere {
+		eq += " AND " + w
+	}
+	eq += " ORDER BY rank LIMIT ?"
+
+	eRows, err := s.db.QueryContext(ctx, eq, eventArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -561,11 +600,52 @@ func (s *Store) Search(ctx context.Context, query string, opts kleio.SearchOpts)
 	}
 	eRows.Close()
 
-	// Search commits
+	// FTS5 fallback: if no event results, try LIKE
+	if len(results) == 0 {
+		pattern := "%" + query + "%"
+		fallbackArgs := []interface{}{pattern, pattern}
+		fallbackWhere := "(content LIKE ? OR freeform_context LIKE ?)"
+		if opts.RepoName != "" {
+			fallbackWhere += " AND repo_name = ?"
+			fallbackArgs = append(fallbackArgs, opts.RepoName)
+		}
+		if opts.SignalType != "" {
+			fallbackWhere += " AND signal_type = ?"
+			fallbackArgs = append(fallbackArgs, opts.SignalType)
+		}
+		fallbackArgs = append(fallbackArgs, limit)
+		fRows, err := s.db.QueryContext(ctx,
+			"SELECT id, content, COALESCE(repo_name,''), COALESCE(file_path,''), signal_type, created_at "+
+				"FROM events WHERE "+fallbackWhere+" ORDER BY created_at DESC LIMIT ?", fallbackArgs...)
+		if err == nil {
+			for fRows.Next() {
+				var r kleio.SearchResult
+				if err := fRows.Scan(&r.ID, &r.Content, &r.RepoName, &r.FilePath, &r.SignalType, &r.CreatedAt); err != nil {
+					break
+				}
+				r.Kind = "event"
+				r.Score = 0.5
+				results = append(results, r)
+			}
+			fRows.Close()
+		}
+	}
+
+	// Search commits with tokenized LIKE
+	words := splitSearchWords(query)
+	var commitClauses []string
+	var commitArgs []interface{}
+	for _, w := range words {
+		commitClauses = append(commitClauses, "message LIKE ?")
+		commitArgs = append(commitArgs, "%"+w+"%")
+	}
+	commitWhere := strings.Join(commitClauses, " OR ")
+	commitArgs = append(commitArgs, limit)
+
 	cRows, err := s.db.QueryContext(ctx,
 		"SELECT sha, message, COALESCE(repo_name,''), committed_at "+
-			"FROM commits WHERE message LIKE ? ORDER BY committed_at DESC LIMIT ?",
-		pattern, limit)
+			"FROM commits WHERE "+commitWhere+" ORDER BY committed_at DESC LIMIT ?",
+		commitArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -582,10 +662,20 @@ func (s *Store) Search(ctx context.Context, query string, opts kleio.SearchOpts)
 	cRows.Close()
 
 	// Search backlog items
+	var backlogClauses []string
+	var backlogArgs []interface{}
+	for _, w := range words {
+		backlogClauses = append(backlogClauses, "title LIKE ?")
+		backlogArgs = append(backlogArgs, "%"+w+"%")
+		backlogClauses = append(backlogClauses, "summary LIKE ?")
+		backlogArgs = append(backlogArgs, "%"+w+"%")
+	}
+	backlogArgs = append(backlogArgs, limit)
+
 	bRows, err := s.db.QueryContext(ctx,
 		"SELECT id, title || ': ' || COALESCE(summary,''), COALESCE(repo_name,''), created_at "+
-			"FROM backlog_items WHERE title LIKE ? OR summary LIKE ? ORDER BY created_at DESC LIMIT ?",
-		pattern, pattern, limit)
+			"FROM backlog_items WHERE "+strings.Join(backlogClauses, " OR ")+" ORDER BY created_at DESC LIMIT ?",
+		backlogArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -618,4 +708,33 @@ func nullInt(n int) interface{} {
 		return nil
 	}
 	return n
+}
+
+func tokenizeForFTS(query string) string {
+	words := splitSearchWords(query)
+	if len(words) == 0 {
+		return `"` + query + `"`
+	}
+	quoted := make([]string, len(words))
+	for i, w := range words {
+		quoted[i] = `"` + w + `"`
+	}
+	if len(quoted) == 1 {
+		return quoted[0]
+	}
+	return strings.Join(quoted, " OR ")
+}
+
+func splitSearchWords(query string) []string {
+	var words []string
+	for _, w := range strings.Fields(query) {
+		w = strings.TrimSpace(w)
+		if w != "" {
+			words = append(words, w)
+		}
+	}
+	if len(words) == 0 {
+		return []string{query}
+	}
+	return words
 }

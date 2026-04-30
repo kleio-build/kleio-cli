@@ -24,11 +24,11 @@ func TestBuildExplainReport_Basic(t *testing.T) {
 
 	now := time.Now()
 	entries := []engine.TimelineEntry{
-		{Timestamp: now.Add(-2 * time.Hour), Kind: "commit", Summary: "feat: add auth module",
+		{Timestamp: now.Add(-2 * time.Hour), Kind: kleio.SignalTypeGitCommit, Summary: "feat: add auth module",
 			FilePaths: []string{"internal/auth/handler.go", "internal/auth/service.go"}},
-		{Timestamp: now.Add(-1 * time.Hour), Kind: "commit", Summary: "fix: auth token expiry",
+		{Timestamp: now.Add(-1 * time.Hour), Kind: kleio.SignalTypeGitCommit, Summary: "fix: auth token expiry",
 			FilePaths: []string{"internal/auth/token.go"}},
-		{Timestamp: now.Add(-30 * time.Minute), Kind: "event", Summary: "decision: use JWT over sessions"},
+		{Timestamp: now.Add(-30 * time.Minute), Kind: kleio.SignalTypeDecision, Summary: "decision: use JWT over sessions"},
 	}
 
 	report := buildExplainReport("HEAD~3", "HEAD", entries, eng)

@@ -3,15 +3,16 @@ package engine
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	kleio "github.com/kleio-build/kleio-core"
 )
 
-// TimelineEntry is a unified chronological item: a commit, event, or link.
+// TimelineEntry is a unified chronological item.
 type TimelineEntry struct {
 	Timestamp   time.Time
-	Kind        string // "commit", "event", "link"
+	Kind        string // signal_type: "git_commit", "decision", "work_item", "checkpoint", ...
 	Summary     string
 	SHA         string
 	EventID     string
@@ -32,15 +33,16 @@ func (e *Engine) Timeline(ctx context.Context, anchor string, since time.Time) (
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]bool, len(commits)*2)
 	for _, c := range commits {
 		t, _ := time.Parse(time.RFC3339, c.CommittedAt)
-		entry := TimelineEntry{
+		entries = append(entries, TimelineEntry{
 			Timestamp: t,
-			Kind:      "commit",
+			Kind:      kleio.SignalTypeGitCommit,
 			Summary:   firstLine(c.Message),
 			SHA:       c.SHA,
-		}
-		entries = append(entries, entry)
+		})
+		seen[c.SHA] = true
 	}
 
 	fileCommits, err := e.store.QueryCommits(ctx, kleio.CommitFilter{
@@ -51,10 +53,6 @@ func (e *Engine) Timeline(ctx context.Context, anchor string, since time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]bool, len(commits))
-	for _, c := range commits {
-		seen[c.SHA] = true
-	}
 	for _, c := range fileCommits {
 		if seen[c.SHA] {
 			continue
@@ -62,27 +60,35 @@ func (e *Engine) Timeline(ctx context.Context, anchor string, since time.Time) (
 		t, _ := time.Parse(time.RFC3339, c.CommittedAt)
 		entries = append(entries, TimelineEntry{
 			Timestamp: t,
-			Kind:      "commit",
+			Kind:      kleio.SignalTypeGitCommit,
 			Summary:   firstLine(c.Message),
 			SHA:       c.SHA,
 		})
+		seen[c.SHA] = true
 	}
 
-	events, err := e.store.ListEvents(ctx, kleio.EventFilter{Limit: 200})
+	evFilter := kleio.EventFilter{
+		ContentSearch: anchor,
+		Limit:         200,
+	}
+	if !since.IsZero() {
+		evFilter.CreatedAfter = formatTime(since)
+	}
+	events, err := e.store.ListEvents(ctx, evFilter)
 	if err != nil {
 		return nil, err
 	}
 	for _, ev := range events {
-		if !containsCI(ev.Content, anchor) && !containsCI(ev.FreeformContext, anchor) {
-			continue
+		if ev.SignalType == kleio.SignalTypeGitCommit && strings.HasPrefix(ev.ID, "git:") {
+			sha := strings.TrimPrefix(ev.ID, "git:")
+			if seen[sha] {
+				continue
+			}
 		}
 		t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
-		if !since.IsZero() && t.Before(since) {
-			continue
-		}
 		entries = append(entries, TimelineEntry{
 			Timestamp: t,
-			Kind:      "event",
+			Kind:      ev.SignalType,
 			Summary:   firstLine(ev.Content),
 			EventID:   ev.ID,
 		})
@@ -108,15 +114,17 @@ func (e *Engine) FileTimeline(ctx context.Context, path string, since time.Time)
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]bool, len(commits))
 	for _, c := range commits {
 		t, _ := time.Parse(time.RFC3339, c.CommittedAt)
 		entries = append(entries, TimelineEntry{
 			Timestamp: t,
-			Kind:      "commit",
+			Kind:      kleio.SignalTypeGitCommit,
 			Summary:   firstLine(c.Message),
 			SHA:       c.SHA,
 			FilePaths: []string{path},
 		})
+		seen[c.SHA] = true
 	}
 
 	events, err := e.store.ListEvents(ctx, kleio.EventFilter{Limit: 200})
@@ -124,16 +132,19 @@ func (e *Engine) FileTimeline(ctx context.Context, path string, since time.Time)
 		return nil, err
 	}
 	for _, ev := range events {
+		if ev.SignalType == kleio.SignalTypeGitCommit && strings.HasPrefix(ev.ID, "git:") {
+			sha := strings.TrimPrefix(ev.ID, "git:")
+			if seen[sha] {
+				continue
+			}
+		}
 		if ev.FilePath != path && !containsCI(ev.Content, path) {
 			continue
 		}
 		t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
-		if !since.IsZero() && t.Before(since) {
-			continue
-		}
 		entries = append(entries, TimelineEntry{
 			Timestamp: t,
-			Kind:      "event",
+			Kind:      ev.SignalType,
 			Summary:   firstLine(ev.Content),
 			EventID:   ev.ID,
 		})

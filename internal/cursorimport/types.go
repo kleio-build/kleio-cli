@@ -10,6 +10,7 @@ type Signal struct {
 	SignalType      string
 	Content         string
 	Rationale       string
+	Confidence      float64
 	AlreadyCaptured bool
 	LineOffset      int
 	SourceFile      string

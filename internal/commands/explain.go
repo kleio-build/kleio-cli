@@ -118,7 +118,7 @@ func buildExplainReport(source, target string, entries []engine.TimelineEntry, e
 	var decisions []string
 
 	for _, e := range entries {
-		if e.Kind == "commit" {
+		if e.Kind == kleio.SignalTypeGitCommit {
 			commitCount++
 			for _, f := range e.FilePaths {
 				subsys := extractSubsystem(f)
@@ -126,11 +126,8 @@ func buildExplainReport(source, target string, entries []engine.TimelineEntry, e
 				filesBySubsys[subsys] = appendUnique(filesBySubsys[subsys], f)
 			}
 		}
-		if e.Kind == "event" {
-			if strings.Contains(strings.ToLower(e.Summary), "decid") ||
-				strings.Contains(strings.ToLower(e.Summary), "decision") {
-				decisions = append(decisions, e.Summary)
-			}
+		if e.Kind == kleio.SignalTypeDecision {
+			decisions = append(decisions, e.Summary)
 		}
 	}
 

@@ -29,10 +29,11 @@ var (
 		"i've decided", "i decided", "going with",
 		"my recommendation is", "i recommend",
 		"between option", "after comparing",
-		"instead of", "rather than",
 	}
-	todoPatterns = regexp.MustCompile(`(?i)\b(TODO|FIXME|HACK|XXX|FOLLOWUP|FOLLOW-UP|follow up)\b[:\s]`)
-	workItemPatterns = regexp.MustCompile(`(?i)(need[s]? to|should|must|have to|will need to|requires?|we still need|remaining work|left to do|not yet implemented|out of scope for now|defer(?:red)?|punt(?:ed)?|skip(?:ped)? for now)`)
+	todoPatterns    = regexp.MustCompile(`(?i)\b(TODO|FIXME|HACK|XXX|FOLLOWUP|FOLLOW-UP|follow up)\b[:\s]`)
+	workItemPatterns = regexp.MustCompile(`(?i)(need[s]? to|have to|will need to|we still need|remaining work|left to do|not yet implemented|out of scope for now|defer(?:red)?|punt(?:ed)?|skip(?:ped)? for now)`)
+
+	codeIndicators = []string{"func ", "import ", ":=", "=>", "//", "/*", "*/", "package "}
 )
 
 type TranscriptParser struct{}
@@ -188,7 +189,7 @@ func (p *TranscriptParser) extractKleioSignal(block contentBlock, signalType str
 // extractImplicitSignals detects decisions and work items from assistant
 // prose that was NOT accompanied by a kleio_decide or kleio_capture call.
 func (p *TranscriptParser) extractImplicitSignals(text string, lineOffset int) []Signal {
-	if len(text) < 40 {
+	if len(text) < 80 {
 		return nil
 	}
 
@@ -196,14 +197,21 @@ func (p *TranscriptParser) extractImplicitSignals(text string, lineOffset int) [
 	lower := strings.ToLower(text)
 	sentences := splitSentences(text)
 
-	// Implicit decisions: assistant discussing alternatives and choosing.
 	for _, sent := range sentences {
+		if isNoiseSentence(sent) {
+			continue
+		}
 		sentLower := strings.ToLower(sent)
 		for _, phrase := range decisionPhrases {
-			if strings.Contains(sentLower, phrase) && len(sent) >= 30 {
+			if strings.Contains(sentLower, phrase) && len(sent) >= 60 {
+				conf := decisionConfidence(sentLower, phrase, len(sent))
+				if conf < 0.5 {
+					continue
+				}
 				signals = append(signals, Signal{
 					SignalType:      "decision",
 					Content:         truncateSentence(sent, 200),
+					Confidence:      conf,
 					AlreadyCaptured: false,
 					LineOffset:      lineOffset,
 				})
@@ -213,13 +221,16 @@ func (p *TranscriptParser) extractImplicitSignals(text string, lineOffset int) [
 	}
 doneDecisions:
 
-	// Implicit work items: TODO/FIXME/follow-up language.
 	if todoPatterns.MatchString(text) {
 		for _, sent := range sentences {
+			if isNoiseSentence(sent) {
+				continue
+			}
 			if todoPatterns.MatchString(sent) && len(sent) >= 20 {
 				signals = append(signals, Signal{
 					SignalType:      "work_item",
 					Content:         truncateSentence(sent, 200),
+					Confidence:      0.8,
 					AlreadyCaptured: false,
 					LineOffset:      lineOffset,
 				})
@@ -228,10 +239,14 @@ doneDecisions:
 		}
 	} else if workItemPatterns.MatchString(lower) {
 		for _, sent := range sentences {
-			if workItemPatterns.MatchString(strings.ToLower(sent)) && len(sent) >= 30 {
+			if isNoiseSentence(sent) {
+				continue
+			}
+			if workItemPatterns.MatchString(strings.ToLower(sent)) && len(sent) >= 50 {
 				signals = append(signals, Signal{
 					SignalType:      "work_item",
 					Content:         truncateSentence(sent, 200),
+					Confidence:      0.6,
 					AlreadyCaptured: false,
 					LineOffset:      lineOffset,
 				})
@@ -241,6 +256,41 @@ doneDecisions:
 	}
 
 	return signals
+}
+
+func isNoiseSentence(sent string) bool {
+	trimmed := strings.TrimSpace(sent)
+	if len(trimmed) < 15 {
+		return true
+	}
+	if strings.Contains(trimmed, "|---|") {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "goroutine ") || strings.Contains(lower, "panic:") {
+		return true
+	}
+	for _, ind := range codeIndicators {
+		if strings.Contains(trimmed, ind) {
+			return true
+		}
+	}
+	return false
+}
+
+func decisionConfidence(sentLower, phrase string, sentLen int) float64 {
+	conf := 0.6
+	idx := strings.Index(sentLower, phrase)
+	if idx < 5 {
+		conf = 1.0
+	}
+	if sentLen > 100 {
+		conf += 0.1
+	}
+	if conf > 1.0 {
+		conf = 1.0
+	}
+	return conf
 }
 
 // extractUserWorkItems detects explicit TODO/follow-up requests in user text.

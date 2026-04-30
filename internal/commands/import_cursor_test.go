@@ -9,13 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildCursorEvent_UsesCliSourceType(t *testing.T) {
+func TestBuildCursorEvent_UsesCursorTranscriptSourceType(t *testing.T) {
 	sig := cursorimport.Signal{
 		SignalType: "work_item",
 		Content:    "Implement auth flow",
 	}
 	evt := buildCursorEvent(sig, sig.Content)
-	assert.Equal(t, "cli", evt.SourceType)
+	assert.Equal(t, "cursor_transcript", evt.SourceType)
 }
 
 func TestBuildCursorEvent_IncludesSignalHash(t *testing.T) {

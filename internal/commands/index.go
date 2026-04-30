@@ -13,8 +13,9 @@ import (
 
 func NewIndexCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "index [path]",
-		Short: "Index git history into the local Kleio database",
+		Use:        "index [path]",
+		Short:      "Index git history (deprecated: use 'kleio import git')",
+		Deprecated: "use 'kleio import git' instead",
 		Long: `Walks the git history of the current (or given) repository and indexes
 all commits, file changes, and identifiers (tickets, PRs, tags) into the
 local .kleio/kleio.db. Re-running is incremental: only new commits are added.
@@ -72,6 +73,7 @@ func printIndexResult(r *indexer.IndexResult) {
 	}
 	fmt.Printf("%s index of %s completed in %s\n", mode, r.RepoName, r.Duration.Round(100*1e6))
 	fmt.Printf("  Commits: %d indexed\n", r.CommitsIndexed)
+	fmt.Printf("  Events:  %d created\n", r.EventsCreated)
 	fmt.Printf("  Files:   %d tracked\n", r.FilesTracked)
 	fmt.Printf("  IDs:     %d extracted (tickets, PRs, tags)\n", r.Identifiers)
 	fmt.Printf("  Links:   %d created\n", r.Links)

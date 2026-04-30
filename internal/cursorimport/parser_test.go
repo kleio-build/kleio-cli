@@ -278,6 +278,70 @@ func TestParser_ShortTextIgnored(t *testing.T) {
 	assert.Empty(t, result.Signals)
 }
 
+func TestParser_CodeSentencesFiltered(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"I'll go with this approach. Here is the implementation: func main() { fmt.Println('hello') } and then we call the function to start the application process."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	for _, s := range result.Signals {
+		assert.NotContains(t, s.Content, "func main()",
+			"code sentences should be filtered out")
+	}
+}
+
+func TestParser_InsteadOfNotADecision(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"I updated the function to return an error instead of panicking. This approach is more idiomatic in Go and allows callers to handle the failure gracefully."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	for _, s := range result.Signals {
+		assert.NotEqual(t, "decision", s.SignalType,
+			"'instead of' in middle of prose should not trigger decision")
+	}
+}
+
+func TestParser_ConfidenceFieldSet(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"After comparing Redis and Memcached for session storage, I'll go with Redis because it supports persistence and pub/sub which we need for the notification system."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Signals)
+	for _, s := range result.Signals {
+		if s.SignalType == "decision" {
+			assert.Greater(t, s.Confidence, 0.0, "implicit signals should have confidence > 0")
+		}
+	}
+}
+
+func TestParser_ShortWorkItemsFiltered(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"This should work. I need to think about the edge cases but for now the implementation handles the main flow correctly."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	for _, s := range result.Signals {
+		if s.SignalType == "work_item" {
+			assert.GreaterOrEqual(t, len(s.Content), 50,
+				"work items should be at least 50 chars")
+		}
+	}
+}
+
 func TestParser_MultipleImplicitSignals(t *testing.T) {
 	lines := []string{
 		`{"role":"assistant","message":{"content":[{"type":"text","text":"I'll use JWT for authentication instead of session cookies because we need stateless auth.\nTODO: add token refresh logic before the MVP launch."}]}}`,

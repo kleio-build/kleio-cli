@@ -151,12 +151,14 @@ func segmentTimeline(entries []engine.TimelineEntry) []segment {
 
 func kindIcon(kind string) string {
 	switch kind {
-	case "commit":
+	case kleio.SignalTypeGitCommit:
 		return "[commit]"
-	case "event":
-		return "[event]"
-	case "link":
-		return "[link]"
+	case kleio.SignalTypeDecision:
+		return "[decision]"
+	case kleio.SignalTypeWorkItem:
+		return "[work_item]"
+	case kleio.SignalTypeCheckpoint:
+		return "[checkpoint]"
 	default:
 		return "[" + kind + "]"
 	}

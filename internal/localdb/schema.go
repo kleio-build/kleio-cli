@@ -96,4 +96,8 @@ CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_id);
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_id);
 CREATE INDEX IF NOT EXISTS idx_identifiers_kind ON identifiers(kind);
 CREATE INDEX IF NOT EXISTS idx_identifiers_value ON identifiers(value);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    event_id UNINDEXED, content, freeform_context
+);
 `

@@ -58,7 +58,44 @@ func OpenInMemory() (*sql.DB, error) {
 	return db, nil
 }
 
+// RunMigrations re-runs schema migrations and backfills. Exported for testing.
+func RunMigrations(db *sql.DB) error {
+	return migrate(db)
+}
+
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(schemaSQL)
+	if _, err := db.Exec(schemaSQL); err != nil {
+		return err
+	}
+	if err := backfillCommitsToEvents(db); err != nil {
+		return fmt.Errorf("backfill commits to events: %w", err)
+	}
+	return backfillFTS(db)
+}
+
+func backfillCommitsToEvents(db *sql.DB) error {
+	_, err := db.Exec(`
+		INSERT OR IGNORE INTO events (id, signal_type, content, source_type,
+		    created_at, repo_name, branch_name, structured_data, author_type)
+		SELECT 'git:' || sha, 'git_commit', message, 'local_git',
+		    committed_at, repo_name, branch,
+		    json_object('sha', sha, 'files_changed', files_changed,
+		        'author_name', author_name, 'author_email', author_email),
+		    'human'
+		FROM commits
+		WHERE NOT EXISTS (
+		    SELECT 1 FROM events WHERE id = 'git:' || commits.sha
+		)
+	`)
+	return err
+}
+
+func backfillFTS(db *sql.DB) error {
+	_, err := db.Exec(`
+		INSERT INTO events_fts (event_id, content, freeform_context)
+		SELECT id, content, COALESCE(freeform_context, '')
+		FROM events
+		WHERE id NOT IN (SELECT event_id FROM events_fts)
+	`)
 	return err
 }

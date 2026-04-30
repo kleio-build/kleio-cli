@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -33,6 +34,7 @@ type IndexResult struct {
 	RepoPath       string
 	RepoName       string
 	CommitsIndexed int
+	EventsCreated  int
 	FilesTracked   int
 	Identifiers    int
 	Links          int
@@ -127,6 +129,23 @@ func (g *GitIndexer) Index(ctx context.Context, repoPath string) (*IndexResult, 
 	}
 	result.CommitsIndexed = len(commits)
 
+	for _, c := range commits {
+		evt := &kleio.Event{
+			ID:             "git:" + c.SHA,
+			SignalType:     kleio.SignalTypeGitCommit,
+			Content:        c.Message,
+			SourceType:     kleio.SourceTypeLocalGit,
+			CreatedAt:      c.CommittedAt,
+			RepoName:       repoName,
+			BranchName:     c.Branch,
+			StructuredData: marshalCommitData(c),
+		}
+		if err := g.store.CreateEvent(ctx, evt); err != nil {
+			continue
+		}
+		result.EventsCreated++
+	}
+
 	for _, rc := range rawCommits {
 		if len(rc.FileEntries) > 0 {
 			for _, fe := range rc.FileEntries {
@@ -202,4 +221,15 @@ func (g *GitIndexer) Index(ctx context.Context, repoPath string) (*IndexResult, 
 
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+func marshalCommitData(c kleio.Commit) string {
+	data := map[string]interface{}{
+		"sha":           c.SHA,
+		"files_changed": c.FilesChanged,
+		"author_name":   c.AuthorName,
+		"author_email":  c.AuthorEmail,
+	}
+	b, _ := json.Marshal(data)
+	return string(b)
 }
