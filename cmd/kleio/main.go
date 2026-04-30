@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/commands"
 	"github.com/kleio-build/kleio-cli/internal/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/fswatcher"
 	"github.com/kleio-build/kleio-cli/internal/gitowner"
 	kleiomcp "github.com/kleio-build/kleio-cli/internal/mcp"
+	"github.com/kleio-build/kleio-cli/internal/storeutil"
 	"github.com/kleio-build/kleio-cli/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -99,6 +101,16 @@ func main() {
 		return newAuthenticatedClient(cfg)
 	}
 
+	getStore := func() kleio.Store {
+		cfg, _ := config.Load()
+		s, err := storeutil.Resolve(cfg, getClient)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kleio: store init: %v\n", err)
+			os.Exit(1)
+		}
+		return s
+	}
+
 	rootCmd := &cobra.Command{
 		Use:     "kleio",
 		Short:   "Capture work discovered during development",
@@ -106,20 +118,23 @@ func main() {
 		Version: fmt.Sprintf("%s (commit: %s, built: %s)", version.Version, version.Commit, version.Date),
 	}
 
-	rootCmd.AddCommand(commands.NewCaptureCmd(getClient))
-	rootCmd.AddCommand(commands.NewCheckpointCmd(getClient))
-	rootCmd.AddCommand(commands.NewBacklogCmd(getClient))
-	rootCmd.AddCommand(commands.NewQueryCmd(getClient))
-	rootCmd.AddCommand(commands.NewDecideCmd(getClient))
+	rootCmd.AddCommand(commands.NewCaptureCmd(getStore))
+	rootCmd.AddCommand(commands.NewCheckpointCmd(getStore))
+	rootCmd.AddCommand(commands.NewBacklogCmd(getStore))
+	rootCmd.AddCommand(commands.NewQueryCmd(getStore))
+	rootCmd.AddCommand(commands.NewDecideCmd(getStore))
 	rootCmd.AddCommand(commands.NewConfigCmd())
 	rootCmd.AddCommand(commands.NewLoginCmd(getClient))
 	rootCmd.AddCommand(commands.NewLogoutCmd())
 	rootCmd.AddCommand(commands.NewWorkspaceCmd(getClient))
 	rootCmd.AddCommand(commands.NewInitCmd(getClient))
 	rootCmd.AddCommand(commands.NewStatusCmd(getClient))
-	rootCmd.AddCommand(commands.NewImportCmd(getClient))
+	rootCmd.AddCommand(commands.NewImportCmd(getStore, getClient))
 	rootCmd.AddCommand(commands.NewCheckCmd(getClient))
-	rootCmd.AddCommand(commands.NewScanCmd(getClient))
+	rootCmd.AddCommand(commands.NewScanCmd(getStore))
+	rootCmd.AddCommand(commands.NewTraceCmd(getStore))
+	rootCmd.AddCommand(commands.NewExplainCmd(getStore))
+	rootCmd.AddCommand(commands.NewIncidentCmd(getStore))
 
 	mcpCmd := &cobra.Command{
 		Use:          "mcp",
@@ -140,7 +155,8 @@ func main() {
 
 			watchCfg := fswatcher.LoadWatchConfig()
 			if watchCfg.Enabled && watchCfg.HasSource("cursor") {
-				stopWatch := startWatchEngine(ctx, apiClient)
+				watchStore := getStore()
+				stopWatch := startWatchEngine(ctx, watchStore)
 				defer stopWatch()
 			}
 
@@ -189,13 +205,13 @@ func resolveWorkspace(c *client.Client) {
 
 // startWatchEngine runs the watch engine as a background goroutine.
 // Returns a cancel function to stop it.
-func startWatchEngine(ctx context.Context, apiClient *client.Client) context.CancelFunc {
+func startWatchEngine(ctx context.Context, store kleio.Store) context.CancelFunc {
 	watchCtx, cancel := context.WithCancel(ctx)
 
 	engine := fswatcher.NewWatchEngine(func(signals []cursorimport.Signal) error {
 		for _, sig := range signals {
-			input := buildWatchCaptureInput(sig)
-			if _, err := apiClient.CreateCapture(input); err != nil {
+			evt := buildWatchEvent(sig)
+			if err := store.CreateEvent(context.Background(), evt); err != nil {
 				fmt.Fprintf(os.Stderr, "kleio watch: capture failed: %v\n", err)
 			}
 		}
@@ -211,7 +227,7 @@ func startWatchEngine(ctx context.Context, apiClient *client.Client) context.Can
 	return cancel
 }
 
-func buildWatchCaptureInput(sig cursorimport.Signal) *client.CaptureInput {
+func buildWatchEvent(sig cursorimport.Signal) *kleio.Event {
 	sd := map[string]interface{}{
 		"ingest_source": "cursor_watch",
 		"signal_hash":   sig.Hash(),
@@ -220,18 +236,17 @@ func buildWatchCaptureInput(sig cursorimport.Signal) *client.CaptureInput {
 		sd["file"] = sig.SourceFile
 	}
 	sdJSON, _ := json.Marshal(sd)
-	sdStr := string(sdJSON)
 
 	provenance := "Observed from Cursor agent transcript (live watch)"
 	if sig.SourceFile != "" {
 		provenance += " (" + filepath.Base(sig.SourceFile) + ")"
 	}
 
-	return &client.CaptureInput{
+	return &kleio.Event{
 		Content:         sig.Content,
 		SignalType:      sig.SignalType,
-		SourceType:      "cli",
-		StructuredData:  &sdStr,
-		FreeformContext: &provenance,
+		SourceType:      kleio.SourceTypeCLI,
+		StructuredData:  string(sdJSON),
+		FreeformContext: provenance,
 	}
 }

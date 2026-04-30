@@ -1,18 +1,19 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/kleio-build/kleio-cli/internal/client"
+	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/cursorimport"
 	"github.com/kleio-build/kleio-cli/internal/privacy"
 	"github.com/spf13/cobra"
 )
 
-func newImportCursorCmd(getClient func() *client.Client) *cobra.Command {
+func newImportCursorCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
 		project string
 		dryRun  bool
@@ -26,9 +27,6 @@ decisions, work items, and checkpoints from tool-call sequences.
 
 Signals that were already captured via Kleio MCP tools are identified
 and skipped. The privacy filter redacts credentials before submission.
-
-This command handles JSONL transcripts only. For .cursor/plans/*.plan.md
-files, use 'kleio import plans' instead.
 
 Examples:
   kleio import cursor --dry-run
@@ -98,13 +96,13 @@ Examples:
 				return nil
 			}
 
-			c := getClient()
+			store := getStore()
+			ctx := context.Background()
 			imported := 0
 			for _, sig := range newSignals {
 				content := pf.Redact(sig.Content)
-				input := buildCursorCaptureInput(sig, content)
-				_, err := c.CreateCapture(input)
-				if err != nil {
+				evt := buildCursorEvent(sig, content)
+				if err := store.CreateEvent(ctx, evt); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to import signal: %v\n", err)
 					continue
 				}
@@ -138,7 +136,7 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-func buildCursorCaptureInput(sig cursorimport.Signal, redactedContent string) *client.CaptureInput {
+func buildCursorEvent(sig cursorimport.Signal, redactedContent string) *kleio.Event {
 	sd := map[string]interface{}{
 		"ingest_source": "cursor_transcript",
 		"signal_hash":   sig.Hash(),
@@ -147,18 +145,17 @@ func buildCursorCaptureInput(sig cursorimport.Signal, redactedContent string) *c
 		sd["file"] = sig.SourceFile
 	}
 	sdJSON, _ := json.Marshal(sd)
-	sdStr := string(sdJSON)
 
 	provenance := "Imported from Cursor agent transcript"
 	if sig.SourceFile != "" {
 		provenance += " (" + filepath.Base(sig.SourceFile) + ")"
 	}
 
-	return &client.CaptureInput{
+	return &kleio.Event{
 		Content:         redactedContent,
 		SignalType:      sig.SignalType,
-		SourceType:      "cli",
-		StructuredData:  &sdStr,
-		FreeformContext: &provenance,
+		SourceType:      kleio.SourceTypeCLI,
+		StructuredData:  string(sdJSON),
+		FreeformContext: provenance,
 	}
 }
