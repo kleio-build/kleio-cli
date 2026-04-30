@@ -1,13 +1,21 @@
 package commands
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
-	"github.com/kleio-build/kleio-cli/internal/client"
+	kleio "github.com/kleio-build/kleio-core"
 	"github.com/spf13/cobra"
 )
 
-func NewDecideCmd(getClient func() *client.Client) *cobra.Command {
+type decisionData struct {
+	Alternatives []string `json:"alternatives"`
+	Rationale    string   `json:"rationale"`
+	Confidence   string   `json:"confidence"`
+}
+
+func NewDecideCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
 		alternatives []string
 		rationale    string
@@ -20,7 +28,7 @@ func NewDecideCmd(getClient func() *client.Client) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "decide [decision text]",
 		Short: "Log an engineering decision with alternatives and rationale",
-		Long:  "Record a decision as a first-class relational capture in Kleio. Decisions are the fastest-decaying, highest-value signal -- they capture WHY choices were made.",
+		Long:  "Record a decision in Kleio. Decisions capture WHY choices were made.",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			content := args[0]
@@ -37,32 +45,30 @@ func NewDecideCmd(getClient func() *client.Client) *cobra.Command {
 				alts = []string{}
 			}
 
-			req := &client.RelationalCaptureCreateRequest{
-				AuthorType: "human",
-				SourceType: "cli",
-				Content:    content,
-				Decision: &client.DecisionWrite{
-					Alternatives: alts,
-					Rationale:    rationale,
-					Confidence:   confidence,
-				},
+			dec := decisionData{
+				Alternatives: alts,
+				Rationale:    rationale,
+				Confidence:   confidence,
 			}
-			if repo != "" {
-				req.RepoName = &repo
-			}
-			if branchName != "" {
-				req.BranchName = &branchName
-			}
-			if filePath != "" {
-				req.FilePath = &filePath
+			sdJSON, _ := json.Marshal(dec)
+
+			evt := &kleio.Event{
+				SignalType:     kleio.SignalTypeDecision,
+				Content:        content,
+				SourceType:     kleio.SourceTypeCLI,
+				AuthorType:     kleio.AuthorTypeHuman,
+				RepoName:       repo,
+				BranchName:     branchName,
+				FilePath:       filePath,
+				StructuredData: string(sdJSON),
 			}
 
-			data, err := getClient().CreateRelationalCapture(req)
-			if err != nil {
+			store := getStore()
+			if err := store.CreateEvent(context.Background(), evt); err != nil {
 				return fmt.Errorf("failed to log decision: %w", err)
 			}
 
-			fmt.Printf("Decision logged via relational path.\n%s\n", string(data))
+			fmt.Printf("Decision logged: %s\n", evt.ID)
 			return nil
 		},
 	}
@@ -72,7 +78,7 @@ func NewDecideCmd(getClient func() *client.Client) *cobra.Command {
 	cmd.Flags().StringVar(&confidence, "confidence", "medium", "Confidence level: low, medium, high")
 	cmd.Flags().StringVar(&repo, "repo", "", "Repository name")
 	cmd.Flags().StringVar(&branchName, "branch", "", "Branch name")
-	cmd.Flags().StringVar(&filePath, "file", "", "Related file path (e.g. ADR document)")
+	cmd.Flags().StringVar(&filePath, "file", "", "Related file path")
 
 	return cmd
 }
