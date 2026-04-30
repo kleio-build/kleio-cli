@@ -31,6 +31,11 @@ func DefaultRankConfig() RankConfig {
 	}
 }
 
+// ExportRecencyScore exposes recencyScore for use by command-level ranking.
+func ExportRecencyScore(ts string) float64 {
+	return recencyScore(ts)
+}
+
 // recencyScore returns a value in [0,1] decaying exponentially with age.
 // Half-life is 7 days.
 func recencyScore(ts string) float64 {

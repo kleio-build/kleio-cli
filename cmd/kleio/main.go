@@ -132,6 +132,9 @@ func main() {
 	rootCmd.AddCommand(commands.NewImportCmd(getStore, getClient))
 	rootCmd.AddCommand(commands.NewCheckCmd(getClient))
 	rootCmd.AddCommand(commands.NewScanCmd(getStore))
+	rootCmd.AddCommand(commands.NewTraceCmd(getStore))
+	rootCmd.AddCommand(commands.NewExplainCmd(getStore))
+	rootCmd.AddCommand(commands.NewIncidentCmd(getStore))
 
 	mcpCmd := &cobra.Command{
 		Use:          "mcp",
