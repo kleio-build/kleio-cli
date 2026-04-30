@@ -6,18 +6,19 @@ import (
 	"path/filepath"
 	"strings"
 
+	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/spf13/cobra"
 )
 
-func NewImportCmd(getClient func() *client.Client) *cobra.Command {
+func NewImportCmd(getStore func() kleio.Store, getClient func() *client.Client) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "Import external data into Kleio",
 	}
 
 	cmd.AddCommand(newImportADRCmd(getClient))
-	cmd.AddCommand(newImportCursorCmd(getClient))
+	cmd.AddCommand(newImportCursorCmd(getStore))
 	return cmd
 }
 
@@ -30,6 +31,8 @@ func newImportADRCmd(getClient func() *client.Client) *cobra.Command {
 		Long: `Recursively scans a directory for .md files, parses them as Architecture
 Decision Records (MADR or Nygard format), and imports them into Kleio as
 decision captures.
+
+Requires Kleio Cloud (kleio login).
 
 Examples:
   kleio import adr ./docs/decisions/ --repo my-app

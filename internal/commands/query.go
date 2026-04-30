@@ -1,42 +1,34 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
-	"github.com/kleio-build/kleio-cli/internal/client"
+	kleio "github.com/kleio-build/kleio-core"
 	"github.com/spf13/cobra"
 )
 
-// NewQueryCmd builds the `kleio query ...` subcommand group, mirroring Ask's
-// retrieval surface (search_captures / semantic_search / get_capture_detail /
-// search_backlog / get_backlog_detail) so humans and agent CLIs can hit the
-// same memory read API the LLM uses inside the Ask agentic loop.
-func NewQueryCmd(getClient func() *client.Client) *cobra.Command {
+func NewQueryCmd(getStore func() kleio.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "query",
-		Short: "Query workspace memory (captures + backlog) using the same surface Ask exposes to the LLM",
-		Long: `Query workspace memory: filter captures by time/signal/repo/keyword,
-embedding-search them by meaning, fetch full detail for one capture, search
-backlog items, or fetch full detail for one backlog item (UUID or KL-N).
-
-These commands hit the same MemoryReadService surface the Ask agentic loop
-calls via tool-use, so output is consistent across web Ask, MCP read tools,
-and the CLI.`,
+		Short: "Query Kleio memory (events + backlog)",
+		Long: `Query local or cloud memory: filter events by time/signal/repo/keyword,
+search by text, fetch full detail for one event, or search backlog items.`,
 	}
 
-	cmd.AddCommand(newQueryCapturesCmd(getClient))
-	cmd.AddCommand(newQuerySemanticCmd(getClient))
-	cmd.AddCommand(newQueryCaptureCmd(getClient))
-	cmd.AddCommand(newQueryBacklogCmd(getClient))
-	cmd.AddCommand(newQueryBacklogShowCmd(getClient))
+	cmd.AddCommand(newQueryCapturesCmd(getStore))
+	cmd.AddCommand(newQuerySearchCmd(getStore))
+	cmd.AddCommand(newQueryCaptureCmd(getStore))
+	cmd.AddCommand(newQueryBacklogCmd(getStore))
+	cmd.AddCommand(newQueryBacklogShowCmd(getStore))
 
 	return cmd
 }
 
-func newQueryCapturesCmd(getClient func() *client.Client) *cobra.Command {
+func newQueryCapturesCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
 		since      string
 		until      string
@@ -49,46 +41,79 @@ func newQueryCapturesCmd(getClient func() *client.Client) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "captures",
-		Short: "List captures filtered by time/signal/repo/keyword",
+		Short: "List events filtered by time/signal/repo/keyword",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			out, err := getClient().SearchCaptures(client.SearchCapturesQuery{
-				Since:      since,
-				Until:      until,
-				SignalType: signalType,
-				RepoName:   repoName,
-				Keyword:    keyword,
-				Limit:      limit,
-			})
-			if err != nil {
-				return fmt.Errorf("search captures: %w", err)
+			filter := kleio.EventFilter{
+				SignalType:    signalType,
+				RepoName:     repoName,
+				CreatedAfter:  since,
+				CreatedBefore: until,
+				Limit:         limit,
 			}
-			if asJSON {
-				return printJSON(cmd.OutOrStdout(), out)
-			}
-			if len(out.Captures) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No captures found.")
+
+			store := getStore()
+
+			if keyword != "" {
+				results, err := store.Search(context.Background(), keyword, kleio.SearchOpts{
+					RepoName:   repoName,
+					SignalType: signalType,
+					Since:      since,
+					Limit:      limit,
+				})
+				if err != nil {
+					return fmt.Errorf("search: %w", err)
+				}
+				if asJSON {
+					return printJSON(cmd.OutOrStdout(), results)
+				}
+				if len(results) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "No results found.")
+					return nil
+				}
+				for _, r := range results {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s [%s] %s\n",
+						shortID(r.ID), r.Kind, oneLine(r.Content, 100))
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\n%d results\n", len(results))
 				return nil
 			}
-			for _, h := range out.Captures {
-				printCaptureRow(cmd.OutOrStdout(), h)
+
+			events, err := store.ListEvents(context.Background(), filter)
+			if err != nil {
+				return fmt.Errorf("list events: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "\n%d captures\n", len(out.Captures))
+			if asJSON {
+				return printJSON(cmd.OutOrStdout(), events)
+			}
+			if len(events) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No events found.")
+				return nil
+			}
+			for _, e := range events {
+				repo := ""
+				if e.RepoName != "" {
+					repo = " [" + e.RepoName + "]"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s [%s]%s %s\n",
+					shortID(e.ID), e.SignalType, repo, oneLine(e.Content, 100))
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "\n%d events\n", len(events))
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&since, "since", "", "ISO-8601 datetime/date for start of window (inclusive)")
-	cmd.Flags().StringVar(&until, "until", "", "ISO-8601 datetime/date for end of window (inclusive)")
-	cmd.Flags().StringVar(&signalType, "signal-type", "", "Filter by signal type (decision, checkpoint, work_item, git_commit, ...)")
-	cmd.Flags().StringVar(&repoName, "repo", "", "Substring match on repo_name (case-insensitive)")
-	cmd.Flags().StringVar(&keyword, "keyword", "", "Case-insensitive substring search in capture content")
-	cmd.Flags().IntVar(&limit, "limit", 0, "Max captures to return (default 10, max 25)")
+	cmd.Flags().StringVar(&since, "since", "", "Start of time window (RFC3339 or date)")
+	cmd.Flags().StringVar(&until, "until", "", "End of time window (RFC3339 or date)")
+	cmd.Flags().StringVar(&signalType, "signal-type", "", "Filter by signal type")
+	cmd.Flags().StringVar(&repoName, "repo", "", "Filter by repo name")
+	cmd.Flags().StringVar(&keyword, "keyword", "", "Search in content")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Max results")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
 }
 
-func newQuerySemanticCmd(getClient func() *client.Client) *cobra.Command {
+func newQuerySearchCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
 		limit  int
 		asJSON bool
@@ -96,58 +121,50 @@ func newQuerySemanticCmd(getClient func() *client.Client) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "semantic [query]",
-		Short: "Embedding similarity search over captures (thematic/conceptual)",
+		Short: "Search events by text (local) or embeddings (cloud)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			q := strings.TrimSpace(strings.Join(args, " "))
 			if q == "" {
 				return fmt.Errorf("query is required")
 			}
-			out, err := getClient().SemanticSearchCaptures(client.SemanticSearchQuery{Query: q, Limit: limit})
+			results, err := getStore().Search(context.Background(), q, kleio.SearchOpts{Limit: limit})
 			if err != nil {
-				return fmt.Errorf("semantic search: %w", err)
+				return fmt.Errorf("search: %w", err)
 			}
 			if asJSON {
-				return printJSON(cmd.OutOrStdout(), out)
+				return printJSON(cmd.OutOrStdout(), results)
 			}
-			if out.Note != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Note: %s\n", out.Note)
-			}
-			if len(out.Captures) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No captures found.")
+			if len(results) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No results found.")
 				return nil
 			}
-			for _, h := range out.Captures {
-				fmt.Fprintf(cmd.OutOrStdout(), "  (%.2f) ", h.Similarity)
-				printCaptureRow(cmd.OutOrStdout(), h)
+			for _, r := range results {
+				fmt.Fprintf(cmd.OutOrStdout(), "  (%.2f) %s [%s] %s\n",
+					r.Score, shortID(r.ID), r.Kind, oneLine(r.Content, 100))
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "\n%d captures\n", len(out.Captures))
+			fmt.Fprintf(cmd.OutOrStdout(), "\n%d results\n", len(results))
 			return nil
 		},
 	}
 
-	cmd.Flags().IntVar(&limit, "limit", 0, "Max captures to return (default 10, max 15)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Max results")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
 }
 
-func newQueryCaptureCmd(getClient func() *client.Client) *cobra.Command {
+func newQueryCaptureCmd(getStore func() kleio.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "capture [id]",
-		Short: "Show one capture by UUID with checkpoint/decision/topics/targets",
+		Short: "Show one event by ID",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			raw, err := getClient().GetCaptureDetail(args[0])
+			evt, err := getStore().GetEvent(context.Background(), args[0])
 			if err != nil {
-				return fmt.Errorf("get capture detail: %w", err)
+				return fmt.Errorf("get event: %w", err)
 			}
-			var pretty map[string]any
-			if err := json.Unmarshal(raw, &pretty); err != nil {
-				_, _ = cmd.OutOrStdout().Write(raw)
-				return nil
-			}
-			b, _ := json.MarshalIndent(pretty, "", "  ")
+			b, _ := json.MarshalIndent(evt, "", "  ")
 			fmt.Fprintln(cmd.OutOrStdout(), string(b))
 			return nil
 		},
@@ -155,14 +172,13 @@ func newQueryCaptureCmd(getClient func() *client.Client) *cobra.Command {
 	return cmd
 }
 
-func newQueryBacklogCmd(getClient func() *client.Client) *cobra.Command {
+func newQueryBacklogCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
 		status     string
 		category   string
 		urgency    string
 		importance string
-		keyword    string
-		ticketID   string
+		search     string
 		repoName   string
 		limit      int
 		asJSON     bool
@@ -170,15 +186,14 @@ func newQueryBacklogCmd(getClient func() *client.Client) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "backlog",
-		Short: "Search backlog items via the memory read surface",
+		Short: "Search backlog items",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			out, err := getClient().SearchBacklogMemory(client.SearchBacklogQuery{
+			items, err := getStore().ListBacklogItems(context.Background(), kleio.BacklogFilter{
 				Status:     status,
 				Category:   category,
 				Urgency:    urgency,
 				Importance: importance,
-				Keyword:    keyword,
-				TicketID:   ticketID,
+				Search:     search,
 				RepoName:   repoName,
 				Limit:      limit,
 			})
@@ -186,66 +201,53 @@ func newQueryBacklogCmd(getClient func() *client.Client) *cobra.Command {
 				return fmt.Errorf("search backlog: %w", err)
 			}
 			if asJSON {
-				return printJSON(cmd.OutOrStdout(), out)
+				return printJSON(cmd.OutOrStdout(), items)
 			}
-			if len(out.BacklogItems) == 0 {
+			if len(items) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No backlog items found.")
 				return nil
 			}
-			for _, h := range out.BacklogItems {
+			for _, h := range items {
 				ticket := ""
-				if h.ShortID != nil {
-					ticket = fmt.Sprintf("KL-%d ", *h.ShortID)
+				if h.ShortID > 0 {
+					ticket = fmt.Sprintf("KL-%d ", h.ShortID)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s%s [%s] %s — %s\n", ticket, shortID(h.ID), h.Status, h.Title, oneLine(h.Summary, 80))
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s%s [%s] %s — %s\n",
+					ticket, shortID(h.ID), h.Status, h.Title, oneLine(h.Summary, 80))
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "\n%d items\n", out.TotalReturned)
+			fmt.Fprintf(cmd.OutOrStdout(), "\n%d items\n", len(items))
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&status, "status", "", "Filter by status (new, ready, in_progress, reviewed, done, ignored, implemented, blocked)")
-	cmd.Flags().StringVar(&category, "category", "", "Filter by category (bug, feature, tech_debt, refactor, docs, research, other)")
-	cmd.Flags().StringVar(&urgency, "urgency", "", "Filter by urgency (low, medium, high)")
-	cmd.Flags().StringVar(&importance, "importance", "", "Filter by importance (low, medium, high)")
-	cmd.Flags().StringVar(&keyword, "keyword", "", "Case-insensitive substring search in title/summary")
-	cmd.Flags().StringVar(&ticketID, "ticket", "", "Match a single backlog item by short id (KL-42 or 42)")
-	cmd.Flags().StringVar(&repoName, "repo", "", "Substring match on repo_name (case-insensitive)")
-	cmd.Flags().IntVar(&limit, "limit", 0, "Max items to return (default 20, max 50)")
+	cmd.Flags().StringVar(&status, "status", "", "Filter by status")
+	cmd.Flags().StringVar(&category, "category", "", "Filter by category")
+	cmd.Flags().StringVar(&urgency, "urgency", "", "Filter by urgency")
+	cmd.Flags().StringVar(&importance, "importance", "", "Filter by importance")
+	cmd.Flags().StringVar(&search, "keyword", "", "Search in title/summary")
+	cmd.Flags().StringVar(&repoName, "repo", "", "Filter by repo")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Max items")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
 }
 
-func newQueryBacklogShowCmd(getClient func() *client.Client) *cobra.Command {
+func newQueryBacklogShowCmd(getStore func() kleio.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backlog-show [id]",
-		Short: "Show one backlog item (UUID or KL-N) with linked captures",
+		Short: "Show one backlog item by ID",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			raw, err := getClient().GetBacklogDetail(args[0])
+			item, err := getStore().GetBacklogItem(context.Background(), args[0])
 			if err != nil {
-				return fmt.Errorf("get backlog detail: %w", err)
+				return fmt.Errorf("get backlog item: %w", err)
 			}
-			var pretty map[string]any
-			if err := json.Unmarshal(raw, &pretty); err != nil {
-				_, _ = cmd.OutOrStdout().Write(raw)
-				return nil
-			}
-			b, _ := json.MarshalIndent(pretty, "", "  ")
+			b, _ := json.MarshalIndent(item, "", "  ")
 			fmt.Fprintln(cmd.OutOrStdout(), string(b))
 			return nil
 		},
 	}
 	return cmd
-}
-
-func printCaptureRow(w io.Writer, h client.MemoryCaptureHit) {
-	repo := ""
-	if h.RepoName != "" {
-		repo = " [" + h.RepoName + "]"
-	}
-	fmt.Fprintf(w, "  %s [%s]%s %s\n", shortID(h.CaptureID), h.SignalType, repo, oneLine(h.Content, 100))
 }
 
 func printJSON(w io.Writer, v any) error {
@@ -255,20 +257,4 @@ func printJSON(w io.Writer, v any) error {
 	}
 	fmt.Fprintln(w, string(b))
 	return nil
-}
-
-func shortID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
-}
-
-func oneLine(s string, max int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.TrimSpace(s)
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-1] + "…"
 }
