@@ -160,7 +160,8 @@ func main() {
 				defer stopWatch()
 			}
 
-			srv := kleiomcp.NewServer(apiClient)
+			mcpStore := getStore()
+			srv := kleiomcp.NewServer(mcpStore, apiClient)
 			err = srv.Run(ctx, &mcp.StdioTransport{})
 			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "EOF")) {
 				return nil

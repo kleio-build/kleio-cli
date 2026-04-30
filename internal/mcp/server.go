@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	kleio "github.com/kleio-build/kleio-core"
+	"github.com/kleio-build/kleio-cli/internal/ai"
 	kleioclient "github.com/kleio-build/kleio-cli/internal/client"
+	"github.com/kleio-build/kleio-cli/internal/engine"
 	"github.com/kleio-build/kleio-cli/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -26,7 +29,6 @@ type CaptureInput struct {
 	SignalType      string `json:"signal_type,omitempty" jsonschema:"work_item (default, creates backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead"`
 }
 
-// CheckpointInput is the relational checkpoint path (POST /api/captures). Field names match the API checkpoint object.
 type CheckpointInput struct {
 	Content            string   `json:"content" jsonschema:"Short capture line (required)"`
 	SummaryWhatChanged string   `json:"summary_what_changed,omitempty" jsonschema:"What changed in this slice; defaults to content if omitted"`
@@ -77,15 +79,20 @@ type BacklogShowInput struct {
 }
 
 type BacklogPrioritizeInput struct {
-	ID          string `json:"id" jsonschema:"Backlog item ID (UUID or KL-N)"`
-	Urgency     string `json:"urgency,omitempty" jsonschema:"New urgency (low, medium, high)"`
-	Importance  string `json:"importance,omitempty" jsonschema:"New importance (low, medium, high)"`
-	Status      string `json:"status,omitempty" jsonschema:"New status (includes in_progress)"`
-	AssigneeID  string `json:"assignee_id,omitempty" jsonschema:"UUID, self, none, or clear"`
+	ID         string `json:"id" jsonschema:"Backlog item ID (UUID or KL-N)"`
+	Urgency    string `json:"urgency,omitempty" jsonschema:"New urgency (low, medium, high)"`
+	Importance string `json:"importance,omitempty" jsonschema:"New importance (low, medium, high)"`
+	Status     string `json:"status,omitempty" jsonschema:"New status (includes in_progress)"`
+	AssigneeID string `json:"assignee_id,omitempty" jsonschema:"UUID, self, none, or clear"`
 }
 
 type AskInput struct {
 	Question string `json:"question" jsonschema:"The question to ask about your engineering history (required)"`
+}
+
+type TraceInput struct {
+	Anchor string `json:"anchor" jsonschema:"File path, feature name, or topic to trace (required)"`
+	Since  string `json:"since,omitempty" jsonschema:"Time window filter (e.g. 7d, 24h)"`
 }
 
 type SessionSummaryInput struct{}
@@ -130,7 +137,7 @@ const kleioInstructions = `Kleio records durable engineering signals. You have t
 
 3. kleio_checkpoint — relational checkpoint path. Record what was implemented in a meaningful slice: validation status, files changed, optional caveats/deferred. Required: content, slice_category, slice_status, validation_status. Optional: backlog_item_id (UUID or KL-N) to link and close the backlog item.
 
-Read tools: kleio_backlog_list (filters: search, assignee including self, limit), kleio_backlog_show (UUID or KL-N). Triage: kleio_backlog_prioritize (urgency, importance, status, assignee_id self/none/UUID). Query: kleio_ask.
+Read tools: kleio_backlog_list (filters: search, assignee including self, limit), kleio_backlog_show (UUID or KL-N). Triage: kleio_backlog_prioritize (urgency, importance, status, assignee_id self/none/UUID). Query: kleio_ask. Trace: kleio_trace.
 
 Platform: high-confidence semantic links from checkpoints or merged PRs (>=0.90) and explicit KL-N references in commit messages can auto-close open backlog items.
 
@@ -143,57 +150,69 @@ RULES:
 - Do not spam — batch related findings, skip trivial refactors and one-off typos.
 - Check kleio_backlog_list before creating work items that might already exist.`
 
-func NewServer(apiClient *kleioclient.Client) *mcp.Server {
+// NewServer creates an MCP server. It accepts a Store (local or cloud) for
+// data operations and an optional API client for cloud-only features.
+// When apiClient is nil, cloud-only features (prioritize with assignee self,
+// session summary with API captures) degrade gracefully.
+func NewServer(store kleio.Store, apiClient *kleioclient.Client) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "kleio-mcp", Version: version.Version}, &mcp.ServerOptions{
 		Instructions: kleioInstructions,
 	})
 
 	session := newSessionState()
 
+	provider, _ := ai.ResolveProvider(ai.LoadConfig())
+	eng := engine.New(store, provider)
+
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_capture",
-		Description: "Smart capture path: POST /api/captures/smart. Use signal_type work_item (default, creates/links backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead.",
-	}, captureHandler(apiClient, session))
+		Description: "Smart capture path. Use signal_type work_item (default, creates/links backlog). Do NOT use checkpoint or decision — use kleio_checkpoint / kleio_decide instead.",
+	}, captureHandler(store, session))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_checkpoint",
-		Description: "Relational checkpoint path: POST /api/captures with nested checkpoint (implementation summary, provenance). Not for backlog synthesis. Required: content, slice_category, slice_status, validation_status. Optional: backlog_item_id (UUID or KL-N).",
-	}, checkpointHandler(apiClient, session))
+		Description: "Relational checkpoint path: record what was implemented in a meaningful slice. Required: content, slice_category, slice_status, validation_status. Optional: backlog_item_id (UUID or KL-N).",
+	}, checkpointHandler(store, session))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_decide",
-		Description: "Relational decision path: POST /api/captures with nested decision (alternatives, rationale, confidence). Decisions are the fastest-decaying, highest-value signal. Required: content, rationale, confidence.",
-	}, decideHandler(apiClient, session))
+		Description: "Relational decision path: record direction chosen after comparing alternatives. Required: content, rationale, confidence (low/medium/high).",
+	}, decideHandler(store, session))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_list",
-		Description: "List synthesized backlog items with optional filters (search, assignee including self when authenticated, limit, plus status/urgency/importance/category/repo).",
-	}, backlogListHandler(apiClient))
+		Description: "List backlog items with optional filters (search, limit, status/urgency/importance/category/repo).",
+	}, backlogListHandler(store, apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_show",
 		Description: "Show details of a specific backlog item (UUID or KL-N).",
-	}, backlogShowHandler(apiClient))
+	}, backlogShowHandler(store, apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_backlog_prioritize",
-		Description: "Update urgency, importance, status, and/or assignee_id (UUID, self, none, clear) of a backlog item (id UUID or KL-N).",
-	}, backlogPrioritizeHandler(apiClient))
+		Description: "Update urgency, importance, status, and/or assignee_id (UUID, self, none, clear) of a backlog item.",
+	}, backlogPrioritizeHandler(store, apiClient))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_session_summary",
-		Description: "Show what Kleio signals have been logged this session. Call at natural breakpoints to check your logging behavior.",
+		Description: "Show what Kleio signals have been logged this session.",
 	}, sessionSummaryHandler(apiClient, session))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kleio_ask",
-		Description: "Query Kleio's engineering memory. Ask questions about past decisions, work items, commits, reviews, and other signals. Returns an AI-synthesized answer with source references.",
-	}, askHandler(apiClient))
+		Description: "Query Kleio's engineering memory. In local mode, searches local data with heuristics. In cloud mode, uses AI-synthesized answers.",
+	}, askHandler(store, eng, apiClient))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "kleio_trace",
+		Description: "Trace how a file, feature, or topic evolved over time. Returns a chronological timeline of commits and events.",
+	}, traceHandler(eng))
 
 	return s
 }
 
-func captureHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input CaptureInput) (*mcp.CallToolResult, TextOutput, error) {
+func captureHandler(store kleio.Store, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input CaptureInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CaptureInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.Content == "" {
 			return errResult("content is required"), TextOutput{}, nil
@@ -205,51 +224,37 @@ func captureHandler(c *kleioclient.Client, session *sessionState) func(ctx conte
 			return errResult(kleioclient.SmartCaptureDecisionRejectedMessage), TextOutput{}, nil
 		}
 
-		captureInput := &kleioclient.CaptureInput{
-			Content:    input.Content,
-			SourceType: "agent",
-			AuthorType: "agent",
-		}
-		if input.Title != "" {
-			captureInput.TitleHint = &input.Title
-		}
+		author := "agent"
 		if input.AuthorType != "" {
-			captureInput.AuthorType = input.AuthorType
+			author = input.AuthorType
 		}
-		if input.RepoName != "" {
-			captureInput.RepoName = &input.RepoName
-		}
-		if input.BranchName != "" {
-			captureInput.BranchName = &input.BranchName
-		}
-		if input.FilePath != "" {
-			captureInput.FilePath = &input.FilePath
-		}
-		if input.LineStart > 0 {
-			captureInput.LineStart = &input.LineStart
-		}
-		if input.FreeformContext != "" {
-			captureInput.FreeformContext = &input.FreeformContext
-		}
+		signalType := kleio.SignalTypeWorkItem
 		if input.SignalType != "" {
-			captureInput.SignalType = input.SignalType
+			signalType = input.SignalType
 		}
 
-		result, err := c.CreateCapture(captureInput)
-		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
-			}
+		evt := &kleio.Event{
+			Content:         input.Content,
+			SignalType:      signalType,
+			SourceType:      kleio.SourceTypeAgent,
+			AuthorType:      author,
+			RepoName:        input.RepoName,
+			BranchName:      input.BranchName,
+			FilePath:        input.FilePath,
+			FreeformContext: input.FreeformContext,
+		}
+
+		if err := store.CreateEvent(ctx, evt); err != nil {
 			return errResult("Capture failed: " + err.Error()), TextOutput{}, nil
 		}
 
 		session.record("kleio_capture")
-		data, _ := json.MarshalIndent(result, "", "  ")
+		data, _ := json.MarshalIndent(evt, "", "  ")
 		return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
 	}
 }
 
-func checkpointHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input CheckpointInput) (*mcp.CallToolResult, TextOutput, error) {
+func checkpointHandler(store kleio.Store, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input CheckpointInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CheckpointInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.Content == "" {
 			return errResult("content is required"), TextOutput{}, nil
@@ -263,94 +268,57 @@ func checkpointHandler(c *kleioclient.Client, session *sessionState) func(ctx co
 			what = input.Content
 		}
 
-		cp := &kleioclient.CheckpointWrite{
-			SliceCategory:      strings.TrimSpace(input.SliceCategory),
-			SliceStatus:        strings.TrimSpace(input.SliceStatus),
-			ValidationStatus:   strings.TrimSpace(input.ValidationStatus),
-			SummaryWhatChanged: what,
+		sd := map[string]interface{}{
+			"slice_category":       input.SliceCategory,
+			"slice_status":         input.SliceStatus,
+			"validation_status":    input.ValidationStatus,
+			"summary_what_changed": what,
 		}
 		if input.SummaryWhy != "" {
-			s := input.SummaryWhy
-			cp.SummaryWhy = &s
+			sd["summary_why"] = input.SummaryWhy
 		}
-		if input.HandoffBody != "" {
-			s := input.HandoffBody
-			cp.HandoffBody = &s
-		}
-		if input.ValidationNotes != "" {
-			s := input.ValidationNotes
-			cp.ValidationNotes = &s
-		}
-		if input.ApiImplications != "" {
-			s := input.ApiImplications
-			cp.ApiImplications = &s
-		}
-		if input.SchemaImplications != "" {
-			s := input.SchemaImplications
-			cp.SchemaImplications = &s
-		}
-		for _, p := range input.Files {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			cp.Files = append(cp.Files, kleioclient.CheckpointFileWrite{Path: p})
+		if len(input.Files) > 0 {
+			sd["files"] = input.Files
 		}
 		if len(input.Caveats) > 0 {
-			cp.Caveats = append(cp.Caveats, input.Caveats...)
+			sd["caveats"] = input.Caveats
 		}
 		if len(input.Deferred) > 0 {
-			cp.Deferred = append(cp.Deferred, input.Deferred...)
+			sd["deferred"] = input.Deferred
 		}
+		if input.BacklogItemID != "" {
+			sd["backlog_item_id"] = input.BacklogItemID
+		}
+		sdJSON, _ := json.Marshal(sd)
 
 		author := "agent"
 		if input.AuthorType != "" {
 			author = input.AuthorType
 		}
 
-		reqBody := &kleioclient.RelationalCaptureCreateRequest{
-			AuthorType: author,
-			SourceType: "agent",
-			Content:    input.Content,
-			Checkpoint: cp,
-		}
-		if input.RepoName != "" {
-			reqBody.RepoName = &input.RepoName
-		}
-		if input.BranchName != "" {
-			reqBody.BranchName = &input.BranchName
-		}
-		if input.FilePath != "" {
-			reqBody.FilePath = &input.FilePath
-		}
-		if input.LineStart > 0 {
-			reqBody.LineStart = &input.LineStart
-		}
-		if input.FreeformContext != "" {
-			reqBody.FreeformContext = &input.FreeformContext
-		}
-		if bid := strings.TrimSpace(input.BacklogItemID); bid != "" {
-			reqBody.BacklogItemID = bid
+		evt := &kleio.Event{
+			Content:         input.Content,
+			SignalType:      kleio.SignalTypeCheckpoint,
+			SourceType:      kleio.SourceTypeAgent,
+			AuthorType:      author,
+			RepoName:        input.RepoName,
+			BranchName:      input.BranchName,
+			FilePath:        input.FilePath,
+			FreeformContext: input.FreeformContext,
+			StructuredData:  string(sdJSON),
 		}
 
-		data, err := c.CreateRelationalCapture(reqBody)
-		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
-			}
+		if err := store.CreateEvent(ctx, evt); err != nil {
 			return errResult("Checkpoint failed: " + err.Error()), TextOutput{}, nil
 		}
+
 		session.record("kleio_checkpoint")
-		pretty := map[string]interface{}{}
-		if err := json.Unmarshal(data, &pretty); err != nil {
-			return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
-		}
-		out, _ := json.MarshalIndent(pretty, "", "  ")
-		return nil, TextOutput{Result: string(out) + "\n" + session.tally()}, nil
+		data, _ := json.MarshalIndent(evt, "", "  ")
+		return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
 	}
 }
 
-func decideHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input DecideInput) (*mcp.CallToolResult, TextOutput, error) {
+func decideHandler(store kleio.Store, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input DecideInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input DecideInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.Content == "" {
 			return errResult("content is required"), TextOutput{}, nil
@@ -373,58 +341,67 @@ func decideHandler(c *kleioclient.Client, session *sessionState) func(ctx contex
 			alts = []string{}
 		}
 
+		sd := map[string]interface{}{
+			"alternatives": alts,
+			"rationale":    input.Rationale,
+			"confidence":   conf,
+		}
+		sdJSON, _ := json.Marshal(sd)
+
 		author := "agent"
 		if input.AuthorType != "" {
 			author = input.AuthorType
 		}
 
-		reqBody := &kleioclient.RelationalCaptureCreateRequest{
-			AuthorType: author,
-			SourceType: "agent",
-			Content:    input.Content,
-			Decision: &kleioclient.DecisionWrite{
-				Alternatives: alts,
-				Rationale:    input.Rationale,
-				Confidence:   conf,
-			},
-		}
-		if input.RepoName != "" {
-			reqBody.RepoName = &input.RepoName
-		}
-		if input.BranchName != "" {
-			reqBody.BranchName = &input.BranchName
-		}
-		if input.FilePath != "" {
-			reqBody.FilePath = &input.FilePath
+		evt := &kleio.Event{
+			Content:        input.Content,
+			SignalType:     kleio.SignalTypeDecision,
+			SourceType:     kleio.SourceTypeAgent,
+			AuthorType:     author,
+			RepoName:       input.RepoName,
+			BranchName:     input.BranchName,
+			FilePath:       input.FilePath,
+			StructuredData: string(sdJSON),
 		}
 
-		data, err := c.CreateRelationalCapture(reqBody)
-		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
-			}
+		if err := store.CreateEvent(ctx, evt); err != nil {
 			return errResult("Decision failed: " + err.Error()), TextOutput{}, nil
 		}
+
 		session.record("kleio_decide")
-		pretty := map[string]interface{}{}
-		if err := json.Unmarshal(data, &pretty); err != nil {
-			return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
-		}
-		out, _ := json.MarshalIndent(pretty, "", "  ")
-		return nil, TextOutput{Result: string(out) + "\n" + session.tally()}, nil
+		data, _ := json.MarshalIndent(evt, "", "  ")
+		return nil, TextOutput{Result: string(data) + "\n" + session.tally()}, nil
 	}
 }
 
-func backlogListHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
+func backlogListHandler(store kleio.Store, apiClient *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input BacklogListInput) (*mcp.CallToolResult, TextOutput, error) {
-		items, err := c.ListBacklogItems(kleioclient.BacklogListFilters{
-			Status: input.Status, Urgency: input.Urgency, Importance: input.Importance, Category: input.Category, Repo: input.Repo,
-			Search: input.Search, Assignee: input.Assignee, Limit: input.Limit,
+		if store.Mode() == kleio.StoreModeCloud && apiClient != nil {
+			items, err := apiClient.ListBacklogItems(kleioclient.BacklogListFilters{
+				Status: input.Status, Urgency: input.Urgency, Importance: input.Importance,
+				Category: input.Category, Repo: input.Repo, Search: input.Search,
+				Assignee: input.Assignee, Limit: input.Limit,
+			})
+			if err != nil {
+				if r := authErrResult(err); r != nil {
+					return r, TextOutput{}, nil
+				}
+				return errResult("List failed: " + err.Error()), TextOutput{}, nil
+			}
+			data, _ := json.MarshalIndent(items, "", "  ")
+			return nil, TextOutput{Result: string(data)}, nil
+		}
+
+		items, err := store.ListBacklogItems(ctx, kleio.BacklogFilter{
+			Status:     input.Status,
+			Urgency:    input.Urgency,
+			Importance: input.Importance,
+			Category:   input.Category,
+			RepoName:   input.Repo,
+			Search:     input.Search,
+			Limit:      input.Limit,
 		})
 		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
-			}
 			return errResult("List failed: " + err.Error()), TextOutput{}, nil
 		}
 		data, _ := json.MarshalIndent(items, "", "  ")
@@ -432,20 +409,30 @@ func backlogListHandler(c *kleioclient.Client) func(ctx context.Context, req *mc
 	}
 }
 
-func backlogShowHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogShowInput) (*mcp.CallToolResult, TextOutput, error) {
+func backlogShowHandler(store kleio.Store, apiClient *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogShowInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input BacklogShowInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.ID == "" {
 			return errResult("id is required"), TextOutput{}, nil
 		}
-		resolved, err := c.ResolveBacklogItemRef(input.ID)
-		if err != nil {
-			return errResult(err.Error()), TextOutput{}, nil
-		}
-		item, err := c.GetBacklogItem(resolved)
-		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
+
+		if store.Mode() == kleio.StoreModeCloud && apiClient != nil {
+			resolved, err := apiClient.ResolveBacklogItemRef(input.ID)
+			if err != nil {
+				return errResult(err.Error()), TextOutput{}, nil
 			}
+			item, err := apiClient.GetBacklogItem(resolved)
+			if err != nil {
+				if r := authErrResult(err); r != nil {
+					return r, TextOutput{}, nil
+				}
+				return errResult("Show failed: " + err.Error()), TextOutput{}, nil
+			}
+			data, _ := json.MarshalIndent(item, "", "  ")
+			return nil, TextOutput{Result: string(data)}, nil
+		}
+
+		item, err := store.GetBacklogItem(ctx, input.ID)
+		if err != nil {
 			return errResult("Show failed: " + err.Error()), TextOutput{}, nil
 		}
 		data, _ := json.MarshalIndent(item, "", "  ")
@@ -453,62 +440,83 @@ func backlogShowHandler(c *kleioclient.Client) func(ctx context.Context, req *mc
 	}
 }
 
-func backlogPrioritizeHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogPrioritizeInput) (*mcp.CallToolResult, TextOutput, error) {
+func backlogPrioritizeHandler(store kleio.Store, apiClient *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input BacklogPrioritizeInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input BacklogPrioritizeInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.ID == "" {
 			return errResult("id is required"), TextOutput{}, nil
 		}
 
-		updates := map[string]interface{}{}
+		if store.Mode() == kleio.StoreModeCloud && apiClient != nil {
+			updates := map[string]interface{}{}
+			if input.Urgency != "" {
+				updates["urgency"] = input.Urgency
+			}
+			if input.Importance != "" {
+				updates["importance"] = input.Importance
+			}
+			if input.Status != "" {
+				updates["status"] = input.Status
+			}
+			if aid := strings.TrimSpace(input.AssigneeID); aid != "" {
+				switch strings.ToLower(aid) {
+				case "none", "clear":
+					updates["assignee_id"] = nil
+				case "self":
+					me, merr := apiClient.GetMeJSON()
+					if merr != nil {
+						return errResult("assignee_id self: could not load /api/me: " + merr.Error()), TextOutput{}, nil
+					}
+					uid, _ := me["id"].(string)
+					if strings.TrimSpace(uid) == "" {
+						return errResult("assignee_id self: user id not available"), TextOutput{}, nil
+					}
+					updates["assignee_id"] = uid
+				default:
+					updates["assignee_id"] = aid
+				}
+			}
+			if len(updates) == 0 {
+				return errResult("Specify urgency, importance, status, and/or assignee_id"), TextOutput{}, nil
+			}
+
+			resolvedID, err := apiClient.ResolveBacklogItemRef(input.ID)
+			if err != nil {
+				return errResult(err.Error()), TextOutput{}, nil
+			}
+			item, err := apiClient.UpdateBacklogItem(resolvedID, updates)
+			if err != nil {
+				if r := authErrResult(err); r != nil {
+					return r, TextOutput{}, nil
+				}
+				return errResult("Update failed: " + err.Error()), TextOutput{}, nil
+			}
+			data, _ := json.MarshalIndent(item, "", "  ")
+			return nil, TextOutput{Result: string(data)}, nil
+		}
+
+		update := &kleio.BacklogItem{}
 		if input.Urgency != "" {
-			updates["urgency"] = input.Urgency
+			update.Urgency = input.Urgency
 		}
 		if input.Importance != "" {
-			updates["importance"] = input.Importance
+			update.Importance = input.Importance
 		}
 		if input.Status != "" {
-			updates["status"] = input.Status
+			update.Status = input.Status
 		}
-		if aid := strings.TrimSpace(input.AssigneeID); aid != "" {
-			switch strings.ToLower(aid) {
-			case "none", "clear":
-				updates["assignee_id"] = nil
-			case "self":
-				me, merr := c.GetMeJSON()
-				if merr != nil {
-					return errResult("assignee_id self: could not load /api/me: " + merr.Error()), TextOutput{}, nil
-				}
-				uid, _ := me["id"].(string)
-				if strings.TrimSpace(uid) == "" {
-					return errResult("assignee_id self: user id not available from /api/me"), TextOutput{}, nil
-				}
-				updates["assignee_id"] = uid
-			default:
-				updates["assignee_id"] = aid
-			}
-		}
-		if len(updates) == 0 {
-			return errResult("Specify urgency, importance, status, and/or assignee_id to update"), TextOutput{}, nil
-		}
-
-		resolvedID, err := c.ResolveBacklogItemRef(input.ID)
-		if err != nil {
-			return errResult(err.Error()), TextOutput{}, nil
-		}
-		item, err := c.UpdateBacklogItem(resolvedID, updates)
-		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
-			}
+		if err := store.UpdateBacklogItem(ctx, input.ID, update); err != nil {
 			return errResult("Update failed: " + err.Error()), TextOutput{}, nil
 		}
-
+		item, err := store.GetBacklogItem(ctx, input.ID)
+		if err != nil {
+			return errResult("Fetch updated item failed: " + err.Error()), TextOutput{}, nil
+		}
 		data, _ := json.MarshalIndent(item, "", "  ")
 		return nil, TextOutput{Result: string(data)}, nil
 	}
 }
 
-func sessionSummaryHandler(c *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input SessionSummaryInput) (*mcp.CallToolResult, TextOutput, error) {
+func sessionSummaryHandler(apiClient *kleioclient.Client, session *sessionState) func(ctx context.Context, req *mcp.CallToolRequest, input SessionSummaryInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input SessionSummaryInput) (*mcp.CallToolResult, TextOutput, error) {
 		session.mu.Lock()
 		startedAt := session.startedAt
@@ -523,21 +531,23 @@ func sessionSummaryHandler(c *kleioclient.Client, session *sessionState) func(ct
 		sb.WriteString(fmt.Sprintf("Session duration: %s\n", duration))
 		sb.WriteString(fmt.Sprintf("Tool calls: %d captures, %d decisions, %d checkpoints\n", captures, decisions, checkpoints))
 
-		apiCaptures, err := c.ListCaptures(kleioclient.ListCapturesOptions{
-			CreatedAfter: startedAt.Format(time.RFC3339),
-			AuthorType:   "agent",
-		})
-		if err == nil && len(apiCaptures) > 0 {
-			sb.WriteString(fmt.Sprintf("\nCaptures logged this session (%d):\n", len(apiCaptures)))
-			for _, cap := range apiCaptures {
-				label := cap.SignalType
-				if label == "" {
-					label = "capture"
+		if apiClient != nil {
+			apiCaptures, err := apiClient.ListCaptures(kleioclient.ListCapturesOptions{
+				CreatedAfter: startedAt.Format(time.RFC3339),
+				AuthorType:   "agent",
+			})
+			if err == nil && len(apiCaptures) > 0 {
+				sb.WriteString(fmt.Sprintf("\nCaptures logged this session (%d):\n", len(apiCaptures)))
+				for _, cap := range apiCaptures {
+					label := cap.SignalType
+					if label == "" {
+						label = "capture"
+					}
+					sb.WriteString(fmt.Sprintf("  - [%s] %s\n", label, truncate(cap.Content, 120)))
 				}
-				sb.WriteString(fmt.Sprintf("  - [%s] %s\n", label, truncate(cap.Content, 120)))
+			} else if err == nil {
+				sb.WriteString("\nNo captures logged this session.\n")
 			}
-		} else if err == nil {
-			sb.WriteString("\nNo captures logged this session.\n")
 		}
 
 		var nudges []string
@@ -558,31 +568,88 @@ func sessionSummaryHandler(c *kleioclient.Client, session *sessionState) func(ct
 	}
 }
 
-func askHandler(c *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input AskInput) (*mcp.CallToolResult, TextOutput, error) {
+func askHandler(store kleio.Store, eng *engine.Engine, apiClient *kleioclient.Client) func(ctx context.Context, req *mcp.CallToolRequest, input AskInput) (*mcp.CallToolResult, TextOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input AskInput) (*mcp.CallToolResult, TextOutput, error) {
 		if input.Question == "" {
 			return errResult("question is required"), TextOutput{}, nil
 		}
 
-		result, err := c.AskMemory(input.Question)
-		if err != nil {
-			if r := authErrResult(err); r != nil {
-				return r, TextOutput{}, nil
+		if store.Mode() == kleio.StoreModeCloud && apiClient != nil {
+			result, err := apiClient.AskMemory(input.Question)
+			if err != nil {
+				if r := authErrResult(err); r != nil {
+					return r, TextOutput{}, nil
+				}
+				return errResult("Query failed: " + err.Error()), TextOutput{}, nil
 			}
-			return errResult("Query failed: " + err.Error()), TextOutput{}, nil
+
+			var sb strings.Builder
+			sb.WriteString(result.Answer)
+			if len(result.Sources) > 0 {
+				sb.WriteString("\n\n---\nSources:\n")
+				for i, src := range result.Sources {
+					sb.WriteString(fmt.Sprintf("[%d] (%s) %s", i+1, src.SignalType, truncate(src.Content, 100)))
+					if src.RepoName != "" {
+						sb.WriteString(fmt.Sprintf(" [%s]", src.RepoName))
+					}
+					sb.WriteString(fmt.Sprintf(" (%.0f%% match)\n", src.Similarity*100))
+				}
+			}
+			return nil, TextOutput{Result: sb.String()}, nil
+		}
+
+		results, err := eng.Search(ctx, input.Question, 10)
+		if err != nil {
+			return errResult("Search failed: " + err.Error()), TextOutput{}, nil
+		}
+
+		if len(results) == 0 {
+			msg := "No matching results found locally. For richer answers, connect to Kleio Cloud with `kleio login`."
+			return nil, TextOutput{Result: msg}, nil
 		}
 
 		var sb strings.Builder
-		sb.WriteString(result.Answer)
-		if len(result.Sources) > 0 {
-			sb.WriteString("\n\n---\nSources:\n")
-			for i, src := range result.Sources {
-				sb.WriteString(fmt.Sprintf("[%d] (%s) %s", i+1, src.SignalType, truncate(src.Content, 100)))
-				if src.RepoName != "" {
-					sb.WriteString(fmt.Sprintf(" [%s]", src.RepoName))
-				}
-				sb.WriteString(fmt.Sprintf(" (%.0f%% match)\n", src.Similarity*100))
+		sb.WriteString(fmt.Sprintf("Found %d result(s) matching %q:\n\n", len(results), input.Question))
+		for i, r := range results {
+			sb.WriteString(fmt.Sprintf("[%d] (%s) %s", i+1, r.Kind, truncate(r.Content, 120)))
+			if r.RepoName != "" {
+				sb.WriteString(fmt.Sprintf(" [%s]", r.RepoName))
 			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\nFor richer semantic answers, connect to Kleio Cloud with `kleio login`.")
+
+		return nil, TextOutput{Result: sb.String()}, nil
+	}
+}
+
+func traceHandler(eng *engine.Engine) func(ctx context.Context, req *mcp.CallToolRequest, input TraceInput) (*mcp.CallToolResult, TextOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input TraceInput) (*mcp.CallToolResult, TextOutput, error) {
+		if input.Anchor == "" {
+			return errResult("anchor is required"), TextOutput{}, nil
+		}
+
+		var sinceTime time.Time
+		if input.Since != "" {
+			if d, err := time.ParseDuration(input.Since); err == nil {
+				sinceTime = time.Now().Add(-d)
+			}
+		}
+
+		entries, err := eng.Timeline(ctx, input.Anchor, sinceTime)
+		if err != nil {
+			return errResult("Trace failed: " + err.Error()), TextOutput{}, nil
+		}
+
+		if len(entries) == 0 {
+			return nil, TextOutput{Result: fmt.Sprintf("No timeline entries found for %q.", input.Anchor)}, nil
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Timeline for %q (%d entries):\n\n", input.Anchor, len(entries)))
+		for _, e := range entries {
+			ts := e.Timestamp.Format("2006-01-02 15:04")
+			sb.WriteString(fmt.Sprintf("  [%s] %s %s\n", e.Kind, ts, e.Summary))
 		}
 
 		return nil, TextOutput{Result: sb.String()}, nil
