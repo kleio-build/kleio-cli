@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -11,7 +12,12 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/bootstrap"
 	"github.com/kleio-build/kleio-cli/internal/client"
 	"github.com/kleio-build/kleio-cli/internal/config"
+	"github.com/kleio-build/kleio-cli/internal/cursorimport"
+	"github.com/kleio-build/kleio-cli/internal/indexer"
 	"github.com/kleio-build/kleio-cli/internal/initprofile"
+	"github.com/kleio-build/kleio-cli/internal/localdb"
+	"github.com/kleio-build/kleio-cli/internal/privacy"
+	"github.com/kleio-build/kleio-cli/internal/storeutil"
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +35,8 @@ type InitFlags struct {
 	Surface        string
 	APIURL         string
 	WorkspaceID    string
+	NoIndex        bool
+	CloudOnly      bool
 }
 
 func NewInitCmd(getClient func() *client.Client) *cobra.Command {
@@ -62,7 +70,126 @@ Programmatic bootstrap (used by kleio-eval and CI):
 	cmd.Flags().StringVar(&f.Surface, "surface", "", "alias of --tool used by kleio-eval (one of: cursor, claude, codex, windsurf, github, copilot, opencode, generic)")
 	cmd.Flags().StringVar(&f.APIURL, "api-url", "", "non-interactive: write this api_url to the active environment config")
 	cmd.Flags().StringVar(&f.WorkspaceID, "workspace-id", "", "non-interactive: write this workspace_id to the active environment config")
+	cmd.Flags().BoolVar(&f.NoIndex, "no-index", false, "skip git indexing (useful for very large repos)")
+	cmd.Flags().BoolVar(&f.CloudOnly, "cloud", false, "skip local DB creation, go straight to login + workspace setup")
 	return cmd
+}
+
+// runInitLocalPhase creates .kleio/kleio.db, indexes git history, imports
+// Cursor transcripts, and appends .kleio/ to .gitignore.
+func runInitLocalPhase(dir string, noIndex bool, dryRun bool) error {
+	dir = filepath.Clean(dir)
+	kleioDir := filepath.Join(dir, storeutil.KleioDir)
+	dbPath := filepath.Join(kleioDir, storeutil.DBFile)
+
+	if dryRun {
+		fmt.Println("would create: " + dbPath)
+		if !noIndex {
+			fmt.Println("would index: git history")
+			fmt.Println("would import: Cursor agent transcripts")
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(kleioDir, 0755); err != nil {
+		return fmt.Errorf("create %s: %w", kleioDir, err)
+	}
+
+	db, err := localdb.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	store := localdb.New(db)
+	defer store.Close()
+
+	appendGitignore(dir)
+
+	if noIndex {
+		fmt.Println("Local database created at " + dbPath)
+		fmt.Println("Skipping git indexing (--no-index).")
+		return nil
+	}
+
+	// Git history indexing.
+	idx := indexer.NewGitIndexer(store)
+	result, err := idx.Index(context.Background(), dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: git indexing: %v\n", err)
+	} else if result.CommitsIndexed > 0 {
+		fmt.Printf("Indexed %d commits across %d files (%s)\n",
+			result.CommitsIndexed, result.FilesTracked,
+			result.Duration.Round(100*1e6))
+	} else {
+		fmt.Println("No git commits found to index.")
+	}
+
+	// Cursor transcript import.
+	importCursorSignals(store)
+
+	return nil
+}
+
+func importCursorSignals(store *localdb.Store) {
+	transcripts, err := cursorimport.DiscoverTranscripts()
+	if err != nil || len(transcripts) == 0 {
+		return
+	}
+
+	parser := cursorimport.NewTranscriptParser()
+	pf := privacy.NewFilter(privacy.DefaultRules())
+	seenHashes := make(map[string]bool)
+	imported := 0
+
+	for _, path := range transcripts {
+		result, err := parser.ParseFile(path)
+		if err != nil {
+			continue
+		}
+		for _, sig := range result.Signals {
+			if sig.AlreadyCaptured {
+				continue
+			}
+			hash := sig.Hash()
+			if seenHashes[hash] {
+				continue
+			}
+			seenHashes[hash] = true
+
+			content := pf.Redact(sig.Content)
+			evt := buildCursorEvent(sig, content)
+			if err := store.CreateEvent(context.Background(), evt); err != nil {
+				continue
+			}
+			imported++
+		}
+	}
+
+	if imported > 0 {
+		fmt.Printf("Imported %d signals from %d Cursor transcript files\n", imported, len(transcripts))
+	}
+}
+
+func appendGitignore(dir string) {
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	content, err := os.ReadFile(gitignorePath)
+	if err == nil && strings.Contains(string(content), ".kleio/") {
+		return
+	}
+
+	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	prefix := "\n"
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		prefix = "\n\n"
+	}
+	if len(content) == 0 {
+		prefix = ""
+	}
+	fmt.Fprintf(f, "%s# Kleio local database (per-machine, not version-controlled)\n.kleio/\n", prefix)
 }
 
 // resolveSurfaceTool merges the legacy --tool flag and the new --surface alias.
@@ -124,6 +251,14 @@ func runInit(f InitFlags, getClient func() *client.Client) error {
 			return err
 		}
 	}
+
+	// Local-first phase: create .kleio/kleio.db, index git, import Cursor transcripts.
+	if !f.CloudOnly {
+		if err := runInitLocalPhase(f.Dir, f.NoIndex, f.DryRun); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: local setup: %v\n", err)
+		}
+	}
+
 	return runInitInner(f.Dir, f.DryRun, f.YesNewOnly, f.Interactive, f.NonInteractive, f.ForceOverwrite, tool, getClient)
 }
 

@@ -12,6 +12,11 @@ package cursorimport
 // - handles empty input
 // - extracts session metadata (role counts, tool call counts)
 // - deduplicates signals within same transcript
+// - extracts implicit decisions from assistant text (alternatives + choice)
+// - extracts implicit work items from assistant text (TODO/follow-up language)
+// - extracts work items from user TODO text
+// - does NOT extract implicit signals from lines with explicit Kleio calls
+// - implicit signals have AlreadyCaptured=false
 //
 // ParseFile:
 // - reads a real JSONL file and returns signals
@@ -174,6 +179,127 @@ func TestParser_DedupesWithinTranscript(t *testing.T) {
 	// Assert
 	require.NoError(t, err)
 	assert.Len(t, result.Signals, 1)
+}
+
+func TestParser_ImplicitDecisionFromAssistantText(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"After comparing Redis and Memcached for session storage, I'll go with Redis because it supports persistence and pub/sub which we need for the notification system."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	require.Len(t, result.Signals, 1)
+	assert.Equal(t, "decision", result.Signals[0].SignalType)
+	assert.Contains(t, result.Signals[0].Content, "go with Redis")
+	assert.False(t, result.Signals[0].AlreadyCaptured)
+}
+
+func TestParser_ImplicitWorkItemFromAssistantText(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"The error handling is working now. TODO: we still need to add retry logic for transient failures in the payment gateway."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	var workItems []Signal
+	for _, s := range result.Signals {
+		if s.SignalType == "work_item" {
+			workItems = append(workItems, s)
+		}
+	}
+	require.NotEmpty(t, workItems)
+	assert.False(t, workItems[0].AlreadyCaptured)
+	assert.Contains(t, workItems[0].Content, "retry logic")
+}
+
+func TestParser_ImplicitWorkItemFromDeferralLanguage(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"I've completed the auth module. We still need to add rate limiting but that's out of scope for this PR."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	var workItems []Signal
+	for _, s := range result.Signals {
+		if s.SignalType == "work_item" {
+			workItems = append(workItems, s)
+		}
+	}
+	require.NotEmpty(t, workItems)
+	assert.False(t, workItems[0].AlreadyCaptured)
+}
+
+func TestParser_UserTodoExtraction(t *testing.T) {
+	lines := []string{
+		`{"role":"user","message":{"content":[{"type":"text","text":"TODO: fix the flaky test in auth_test.go before merging"}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	require.Len(t, result.Signals, 1)
+	assert.Equal(t, "work_item", result.Signals[0].SignalType)
+	assert.Contains(t, result.Signals[0].Content, "flaky test")
+	assert.False(t, result.Signals[0].AlreadyCaptured)
+}
+
+func TestParser_NoImplicitSignalWhenKleioCallPresent(t *testing.T) {
+	// Line has both: assistant text with decision language AND an explicit kleio_decide call.
+	// Only the explicit call should produce a signal.
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"I'll go with PostgreSQL because it has better JSON support."},{"type":"tool_use","name":"kleio_decide","input":{"content":"Use PostgreSQL","rationale":"Better JSON support"}}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	require.Len(t, result.Signals, 1)
+	assert.Equal(t, "decision", result.Signals[0].SignalType)
+	assert.True(t, result.Signals[0].AlreadyCaptured)
+}
+
+func TestParser_ShortTextIgnored(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	assert.Empty(t, result.Signals)
+}
+
+func TestParser_MultipleImplicitSignals(t *testing.T) {
+	lines := []string{
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"I'll use JWT for authentication instead of session cookies because we need stateless auth.\nTODO: add token refresh logic before the MVP launch."}]}}`,
+	}
+	parser := NewTranscriptParser()
+
+	result, err := parser.ParseLines(lines)
+
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(result.Signals), 2)
+
+	var hasDecision, hasWorkItem bool
+	for _, s := range result.Signals {
+		if s.SignalType == "decision" {
+			hasDecision = true
+		}
+		if s.SignalType == "work_item" {
+			hasWorkItem = true
+		}
+	}
+	assert.True(t, hasDecision, "expected implicit decision")
+	assert.True(t, hasWorkItem, "expected implicit work item")
 }
 
 func TestParseFile_ReadsJSONL(t *testing.T) {

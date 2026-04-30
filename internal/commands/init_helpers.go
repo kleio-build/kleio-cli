@@ -77,7 +77,11 @@ func printInitVerify(ok bool, detail string) {
 func printNextSteps(ids []initprofile.ID, writtenDests []string, projectDir string, verifyOK bool) {
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println(`  • Track your first slice: kleio checkpoint "Kleio CLI ready" --slice-category implementation --slice-status completed --validation-status passed`)
+	fmt.Println("  • Try: kleio trace project")
+	fmt.Println("  • Try: kleio explain HEAD~10 HEAD")
+	fmt.Println(`  • Try: kleio incident "the search is broken"`)
+	fmt.Println()
+	fmt.Println("  To connect to Kleio Cloud: kleio login")
 
 	wants := func(id initprofile.ID) bool {
 		return profileIDsInclude(ids, id)
