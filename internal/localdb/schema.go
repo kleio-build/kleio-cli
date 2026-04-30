@@ -91,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commits_repo ON commits(repo_path);
 CREATE INDEX IF NOT EXISTS idx_commits_date ON commits(committed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commit_files_path ON commit_files(file_path);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_links_dedup ON links(source_id, target_id, link_type);
 CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_id);
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_id);
 CREATE INDEX IF NOT EXISTS idx_identifiers_kind ON identifiers(kind);

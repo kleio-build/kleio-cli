@@ -71,8 +71,17 @@ Examples:
 			}
 
 			if len(report.Suspects) == 0 {
-				fmt.Fprintln(os.Stderr, "No suspicious changes found in the given time window.")
-				os.Exit(1)
+				if asJSON {
+					json.NewEncoder(os.Stdout).Encode(report)
+					os.Exit(1)
+				}
+				if !noInteractive && isInteractive() {
+					report = runIncidentRefinement(os.Stdin, os.Stderr, eng, store, signal, files, sinceTime)
+				}
+				if report == nil || len(report.Suspects) == 0 {
+					fmt.Fprintln(os.Stderr, "No suspicious changes found in the given time window.")
+					os.Exit(1)
+				}
 			}
 
 			if asJSON {

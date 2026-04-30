@@ -95,6 +95,57 @@ func (e *Engine) Timeline(ctx context.Context, anchor string, since time.Time) (
 	return entries, nil
 }
 
+// FileTimeline returns the chronological history of a specific file path,
+// including all commits that touched it and events referencing it.
+func (e *Engine) FileTimeline(ctx context.Context, path string, since time.Time) ([]TimelineEntry, error) {
+	var entries []TimelineEntry
+
+	commits, err := e.store.QueryCommits(ctx, kleio.CommitFilter{
+		FilePath: path,
+		Since:    formatTime(since),
+		Limit:    200,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range commits {
+		t, _ := time.Parse(time.RFC3339, c.CommittedAt)
+		entries = append(entries, TimelineEntry{
+			Timestamp: t,
+			Kind:      "commit",
+			Summary:   firstLine(c.Message),
+			SHA:       c.SHA,
+			FilePaths: []string{path},
+		})
+	}
+
+	events, err := e.store.ListEvents(ctx, kleio.EventFilter{Limit: 200})
+	if err != nil {
+		return nil, err
+	}
+	for _, ev := range events {
+		if ev.FilePath != path && !containsCI(ev.Content, path) {
+			continue
+		}
+		t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
+		if !since.IsZero() && t.Before(since) {
+			continue
+		}
+		entries = append(entries, TimelineEntry{
+			Timestamp: t,
+			Kind:      "event",
+			Summary:   firstLine(ev.Content),
+			EventID:   ev.ID,
+		})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Timestamp.Before(entries[j].Timestamp)
+	})
+
+	return entries, nil
+}
+
 func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""

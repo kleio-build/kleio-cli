@@ -12,6 +12,7 @@ import (
 	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/ai"
 	"github.com/kleio-build/kleio-cli/internal/engine"
+	"github.com/kleio-build/kleio-cli/internal/gitreader"
 	"github.com/spf13/cobra"
 )
 
@@ -57,21 +58,48 @@ Examples:
 
 			provider, _ := ai.ResolveProvider(ai.LoadConfig())
 			eng := engine.New(store, provider)
-
-			sinceTime, _ := parseSince(since)
 			_ = noInteractive
 
-			commits, err := eng.Timeline(context.Background(), "", sinceTime)
+			rangeCommits, err := gitreader.CommitRange(".", source, target)
 			if err != nil {
-				return fmt.Errorf("explain failed: %w", err)
+				sinceTime, _ := parseSince(since)
+				entries, tlErr := eng.Timeline(context.Background(), "", sinceTime)
+				if tlErr != nil {
+					return fmt.Errorf("explain failed: %w", tlErr)
+				}
+				report := buildExplainReport(source, target, entries, eng)
+				if asJSON {
+					return json.NewEncoder(os.Stdout).Encode(report)
+				}
+				return renderExplainReport(os.Stdout, report)
 			}
 
-			report := buildExplainReport(source, target, commits, eng)
+			var entries []engine.TimelineEntry
+			for _, rc := range rangeCommits {
+				entries = append(entries, engine.TimelineEntry{
+					Timestamp: rc.Timestamp,
+					Kind:      "commit",
+					Summary:   firstLine(rc.Message),
+					SHA:       rc.Hash,
+					FilePaths: rc.Files,
+				})
+			}
 
+			events, _ := store.ListEvents(context.Background(), kleio.EventFilter{Limit: 200})
+			for _, ev := range events {
+				t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
+				entries = append(entries, engine.TimelineEntry{
+					Timestamp: t,
+					Kind:      "event",
+					Summary:   firstLine(ev.Content),
+					EventID:   ev.ID,
+				})
+			}
+
+			report := buildExplainReport(source, target, entries, eng)
 			if asJSON {
 				return json.NewEncoder(os.Stdout).Encode(report)
 			}
-
 			return renderExplainReport(os.Stdout, report)
 		},
 	}
@@ -118,8 +146,17 @@ func buildExplainReport(source, target string, entries []engine.TimelineEntry, e
 		return subsystems[details[i].Subsystem] > subsystems[details[j].Subsystem]
 	})
 
+	var summaryEvents []kleio.Event
+	for _, e := range entries {
+		summaryEvents = append(summaryEvents, kleio.Event{
+			SignalType: e.Kind,
+			Content:    e.Summary,
+			CreatedAt:  e.Timestamp.Format(time.RFC3339),
+		})
+	}
+
 	summary := fmt.Sprintf("%d commit(s) across %d subsystem(s)", commitCount, len(subsystems))
-	if summaryText, err := eng.Summarize(context.Background(), nil); err == nil && summaryText != "No events to summarize." {
+	if summaryText, err := eng.Summarize(context.Background(), summaryEvents); err == nil && summaryText != "No events to summarize." {
 		summary = summaryText
 	}
 

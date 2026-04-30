@@ -436,7 +436,7 @@ func (s *Store) CreateLink(ctx context.Context, l *kleio.Link) error {
 		l.Confidence = 1.0
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO links (id, source_id, target_id, link_type, confidence, reason, created_at)
+		`INSERT OR IGNORE INTO links (id, source_id, target_id, link_type, confidence, reason, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		l.ID, l.SourceID, l.TargetID, l.LinkType, l.Confidence, nullStr(l.Reason), l.CreatedAt)
 	return err

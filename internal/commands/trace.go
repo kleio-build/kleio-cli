@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/ai"
@@ -33,6 +34,11 @@ Examples:
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anchor := strings.Join(args, " ")
+			isFiletrace := false
+			if len(args) >= 2 && args[0] == "file" {
+				anchor = strings.Join(args[1:], " ")
+				isFiletrace = true
+			}
 			store := getStore()
 
 			provider, _ := ai.ResolveProvider(ai.LoadConfig())
@@ -40,16 +46,29 @@ Examples:
 
 			sinceTime, _ := parseSince(since)
 
-			entries, err := eng.Timeline(context.Background(), anchor, sinceTime)
+			var entries []engine.TimelineEntry
+			var err error
+			if isFiletrace {
+				entries, err = eng.FileTimeline(context.Background(), anchor, sinceTime)
+			} else {
+				entries, err = eng.Timeline(context.Background(), anchor, sinceTime)
+			}
 			if err != nil {
 				return fmt.Errorf("trace failed: %w", err)
 			}
 
 			if len(entries) == 0 {
-				if !noInteractive && isInteractive() {
-					fmt.Fprintf(os.Stderr, "No results found for %q. Try broadening your search.\n", anchor)
+				if asJSON {
+					json.NewEncoder(os.Stdout).Encode([]engine.TimelineEntry{})
+					os.Exit(1)
 				}
-				os.Exit(1)
+				if !noInteractive && isInteractive() {
+					entries = runTraceRefinement(os.Stdin, os.Stderr, store, anchor, sinceTime)
+				}
+				if len(entries) == 0 {
+					fmt.Fprintf(os.Stderr, "No results found for %q. Try broadening your search.\n", anchor)
+					os.Exit(1)
+				}
 			}
 
 			if asJSON {
@@ -82,9 +101,17 @@ func renderTraceReport(w *os.File, anchor string, entries []engine.TimelineEntry
 		fmt.Fprintln(w)
 	}
 
-	events, _ := eng.Summarize(context.Background(), nil)
-	if events != "" && events != "No events to summarize." {
-		fmt.Fprintf(w, "Summary: %s\n", events)
+	var summaryEvents []kleio.Event
+	for _, e := range entries {
+		summaryEvents = append(summaryEvents, kleio.Event{
+			SignalType: e.Kind,
+			Content:    e.Summary,
+			CreatedAt:  e.Timestamp.Format(time.RFC3339),
+		})
+	}
+	summaryText, _ := eng.Summarize(context.Background(), summaryEvents)
+	if summaryText != "" && summaryText != "No events to summarize." {
+		fmt.Fprintf(w, "Summary: %s\n", summaryText)
 	}
 
 	return nil

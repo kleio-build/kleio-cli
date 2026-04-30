@@ -128,16 +128,31 @@ func (g *GitIndexer) Index(ctx context.Context, repoPath string) (*IndexResult, 
 	result.CommitsIndexed = len(commits)
 
 	for _, rc := range rawCommits {
-		for _, f := range rc.Files {
-			fc := &kleio.FileChange{
-				CommitSHA:  rc.Hash,
-				FilePath:   f,
-				ChangeType: kleio.ChangeTypeModified,
+		if len(rc.FileEntries) > 0 {
+			for _, fe := range rc.FileEntries {
+				fc := &kleio.FileChange{
+					CommitSHA:  rc.Hash,
+					FilePath:   fe.Path,
+					ChangeType: fe.ChangeType,
+					OldPath:    fe.OldPath,
+				}
+				if err := g.store.TrackFileChange(ctx, fc); err != nil {
+					continue
+				}
+				result.FilesTracked++
 			}
-			if err := g.store.TrackFileChange(ctx, fc); err != nil {
-				continue
+		} else {
+			for _, f := range rc.Files {
+				fc := &kleio.FileChange{
+					CommitSHA:  rc.Hash,
+					FilePath:   f,
+					ChangeType: kleio.ChangeTypeModified,
+				}
+				if err := g.store.TrackFileChange(ctx, fc); err != nil {
+					continue
+				}
+				result.FilesTracked++
 			}
-			result.FilesTracked++
 		}
 	}
 
@@ -158,10 +173,20 @@ func (g *GitIndexer) Index(ctx context.Context, repoPath string) (*IndexResult, 
 	}
 
 	isSquashHeavy := false
-	if len(commits) > 20 {
+	if repo != nil && repo.IsSquashHeavy {
+		isSquashHeavy = true
+	}
+	totalCommits, _ := g.store.QueryCommits(ctx, kleio.CommitFilter{RepoPath: absPath, Limit: 0})
+	totalCount := len(totalCommits)
+	if totalCount == 0 {
+		totalCount = len(commits)
+	}
+	if totalCount > 20 {
 		squashRatio := float64(largeCommitCount) / float64(len(commits))
 		mergeRatio := float64(mergeCount) / float64(len(commits))
-		isSquashHeavy = squashRatio > 0.2 || mergeRatio > 0.5
+		if squashRatio > 0.2 || mergeRatio > 0.5 {
+			isSquashHeavy = true
+		}
 	}
 	result.IsSquashHeavy = isSquashHeavy
 

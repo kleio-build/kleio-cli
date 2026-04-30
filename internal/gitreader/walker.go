@@ -67,10 +67,16 @@ func Walk(opts WalkOptions) ([]Commit, error) {
 			Branch:    resolveBranch(c.Hash, branchMap, headRef),
 		}
 
-		stats, err := c.Stats()
-		if err == nil {
+		commit.FileEntries = diffTreeEntries(c)
+		for _, fe := range commit.FileEntries {
+			commit.Files = append(commit.Files, fe.Path)
+		}
+		if len(commit.FileEntries) == 0 {
+			stats, _ := c.Stats()
 			for _, s := range stats {
 				commit.Files = append(commit.Files, s.Name)
+				fe := FileEntry{Path: s.Name, ChangeType: inferChangeType(s)}
+				commit.FileEntries = append(commit.FileEntries, fe)
 			}
 		}
 
@@ -105,4 +111,66 @@ func resolveBranch(hash plumbing.Hash, branchMap map[plumbing.Hash]string, head 
 		return head.Name().Short()
 	}
 	return "unknown"
+}
+
+func diffTreeEntries(c *object.Commit) []FileEntry {
+	tree, err := c.Tree()
+	if err != nil {
+		return nil
+	}
+
+	var parentTree *object.Tree
+	if c.NumParents() > 0 {
+		parent, err := c.Parents().Next()
+		if err == nil {
+			parentTree, _ = parent.Tree()
+		}
+	}
+
+	if parentTree == nil {
+		var entries []FileEntry
+		tree.Files().ForEach(func(f *object.File) error {
+			entries = append(entries, FileEntry{Path: f.Name, ChangeType: "added"})
+			return nil
+		})
+		return entries
+	}
+
+	changes, err := parentTree.Diff(tree)
+	if err != nil {
+		return nil
+	}
+
+	var entries []FileEntry
+	for _, ch := range changes {
+		fe := FileEntry{}
+		switch {
+		case ch.From.Name == "" && ch.To.Name != "":
+			fe.Path = ch.To.Name
+			fe.ChangeType = "added"
+		case ch.From.Name != "" && ch.To.Name == "":
+			fe.Path = ch.From.Name
+			fe.ChangeType = "deleted"
+		case ch.From.Name != ch.To.Name:
+			fe.Path = ch.To.Name
+			fe.OldPath = ch.From.Name
+			fe.ChangeType = "renamed"
+		default:
+			fe.Path = ch.To.Name
+			fe.ChangeType = "modified"
+		}
+		entries = append(entries, fe)
+	}
+	return entries
+}
+
+func inferChangeType(s object.FileStat) string {
+	switch {
+	case s.Addition > 0 && s.Deletion == 0:
+		return "added"
+	case s.Deletion > 0 && s.Addition == 0:
+		return "deleted"
+	default:
+		return "modified"
+	}
 }
