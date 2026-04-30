@@ -1,27 +1,28 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/kleio-build/kleio-cli/internal/client"
+	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/gitreader"
 	"github.com/kleio-build/kleio-cli/internal/privacy"
 	"github.com/spf13/cobra"
 )
 
-func NewScanCmd(getClient func() *client.Client) *cobra.Command {
+func NewScanCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
-		since       string
-		author      string
-		jsonOutput  bool
-		noFilter    bool
-		importFlag  bool
-		dryRun      bool
-		repoName    string
+		since      string
+		author     string
+		jsonOutput bool
+		noFilter   bool
+		importFlag bool
+		dryRun     bool
+		repoName   string
 	)
 
 	makeRunE := func(view gitreader.ScanView) func(cmd *cobra.Command, args []string) error {
@@ -58,7 +59,7 @@ func NewScanCmd(getClient func() *client.Client) *cobra.Command {
 			}
 
 			if importFlag {
-				return runImport(getClient, result, repoName, dryRun)
+				return runImport(getStore, result, repoName, dryRun)
 			}
 
 			return gitreader.Format(os.Stdout, result, mode, view)
@@ -103,7 +104,7 @@ Subcommands produce different views of the same data:
 		sub.Flags().StringVar(&author, "author", "", "Filter commits by author email")
 		sub.Flags().BoolVar(&jsonOutput, "json", false, "Output as structured JSON")
 		sub.Flags().BoolVar(&noFilter, "no-filter-noise", false, "Include merge commits and lockfile changes")
-		sub.Flags().BoolVar(&importFlag, "import", false, "Import extracted signals into Kleio (requires auth)")
+		sub.Flags().BoolVar(&importFlag, "import", false, "Import extracted signals into Kleio")
 		sub.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be imported without sending")
 		sub.Flags().StringVar(&repoName, "repo", "", "Repository name for imported captures")
 		cmd.AddCommand(sub)
@@ -157,7 +158,7 @@ func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
-func runImport(getClient func() *client.Client, result *gitreader.ScanResult, repoName string, dryRun bool) error {
+func runImport(getStore func() kleio.Store, result *gitreader.ScanResult, repoName string, dryRun bool) error {
 	pf := privacy.NewFilter(privacy.DefaultRules())
 	if len(result.Tasks) == 0 {
 		fmt.Println("No tasks to import.")
@@ -176,7 +177,8 @@ func runImport(getClient func() *client.Client, result *gitreader.ScanResult, re
 		return nil
 	}
 
-	c := getClient()
+	store := getStore()
+	ctx := context.Background()
 	imported := 0
 	for _, t := range result.Tasks {
 		content := pf.Redact(t.Summary)
@@ -184,11 +186,8 @@ func runImport(getClient func() *client.Client, result *gitreader.ScanResult, re
 			content += " [" + joinStrings(t.Tickets, ", ") + "]"
 		}
 
-		input := buildScanCaptureInput(t, content, repoName)
-
-
-		_, err := c.CreateCapture(input)
-		if err != nil {
+		evt := buildScanEvent(t, content, repoName)
+		if err := store.CreateEvent(ctx, evt); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to import task %q: %v\n", t.Summary, err)
 			continue
 		}
@@ -210,7 +209,7 @@ func joinStrings(ss []string, sep string) string {
 	return result
 }
 
-func buildScanCaptureInput(task gitreader.Task, content, repoName string) *client.CaptureInput {
+func buildScanEvent(task gitreader.Task, content, repoName string) *kleio.Event {
 	var shas []string
 	for _, c := range task.Commits {
 		if c.Hash != "" {
@@ -230,7 +229,6 @@ func buildScanCaptureInput(task gitreader.Task, content, repoName string) *clien
 		sd["branch"] = task.Branch
 	}
 	sdJSON, _ := json.Marshal(sd)
-	sdStr := string(sdJSON)
 
 	provenance := "Imported from local git history"
 	if task.Branch != "" {
@@ -240,17 +238,15 @@ func buildScanCaptureInput(task gitreader.Task, content, repoName string) *clien
 		provenance += " — " + strings.Join(abbreviateSHAs(shas), ", ")
 	}
 
-	input := &client.CaptureInput{
+	evt := &kleio.Event{
 		Content:         content,
-		SignalType:      "work_item",
-		SourceType:      "cli",
-		StructuredData:  &sdStr,
-		FreeformContext: &provenance,
+		SignalType:      kleio.SignalTypeWorkItem,
+		SourceType:      kleio.SourceTypeCLI,
+		StructuredData:  string(sdJSON),
+		FreeformContext: provenance,
+		RepoName:        repoName,
 	}
-	if repoName != "" {
-		input.RepoName = &repoName
-	}
-	return input
+	return evt
 }
 
 func abbreviateSHAs(shas []string) []string {
