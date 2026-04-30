@@ -31,6 +31,13 @@ func (s *Store) Close() error { return nil }
 // --- Events ---
 
 func (s *Store) CreateEvent(_ context.Context, e *kleio.Event) error {
+	if e.SignalType == kleio.SignalTypeCheckpoint || e.SignalType == kleio.SignalTypeDecision {
+		return s.createRelationalEvent(e)
+	}
+	return s.createSmartEvent(e)
+}
+
+func (s *Store) createSmartEvent(e *kleio.Event) error {
 	input := &client.CaptureInput{
 		Content:    e.Content,
 		SignalType: e.SignalType,
@@ -62,6 +69,57 @@ func (s *Store) CreateEvent(_ context.Context, e *kleio.Event) error {
 	}
 	if e.ID == "" {
 		e.ID = result.CaptureID
+	}
+	return nil
+}
+
+func (s *Store) createRelationalEvent(e *kleio.Event) error {
+	req := &client.RelationalCaptureCreateRequest{
+		AuthorType: e.AuthorType,
+		SourceType: e.SourceType,
+		Content:    e.Content,
+	}
+	if e.RepoName != "" {
+		req.RepoName = &e.RepoName
+	}
+	if e.BranchName != "" {
+		req.BranchName = &e.BranchName
+	}
+	if e.FilePath != "" {
+		req.FilePath = &e.FilePath
+	}
+	if e.FreeformContext != "" {
+		req.FreeformContext = &e.FreeformContext
+	}
+	if e.StructuredData != "" {
+		req.StructuredData = &e.StructuredData
+	}
+
+	if e.SignalType == kleio.SignalTypeCheckpoint {
+		var cp client.CheckpointWrite
+		if err := json.Unmarshal([]byte(e.StructuredData), &cp); err == nil && cp.SliceCategory != "" {
+			req.Checkpoint = &cp
+			req.StructuredData = nil
+		}
+	} else if e.SignalType == kleio.SignalTypeDecision {
+		var dec client.DecisionWrite
+		if err := json.Unmarshal([]byte(e.StructuredData), &dec); err == nil && dec.Rationale != "" {
+			req.Decision = &dec
+			req.StructuredData = nil
+		}
+	}
+
+	data, err := s.client.CreateRelationalCapture(req)
+	if err != nil {
+		return err
+	}
+	if e.ID == "" {
+		var wrap struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(data, &wrap) == nil && wrap.ID != "" {
+			e.ID = wrap.ID
+		}
 	}
 	return nil
 }
