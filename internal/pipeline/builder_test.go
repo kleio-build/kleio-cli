@@ -74,8 +74,8 @@ func TestBuild_DefaultsApplied(t *testing.T) {
 	if len(p.Ingesters) != 3 {
 		t.Errorf("ingesters=%d want 3 (plan+transcript+git)", len(p.Ingesters))
 	}
-	if len(p.Correlators) != 4 {
-		t.Errorf("correlators=%d want 4 (time+id+filepath+search)", len(p.Correlators))
+	if len(p.Correlators) != 5 {
+		t.Errorf("correlators=%d want 5 (time+id+filepath+entity_overlap+search)", len(p.Correlators))
 	}
 	if len(p.Synthesizers) != 2 {
 		t.Errorf("synthesizers=%d want 2 (plan+orphan; no LLM)", len(p.Synthesizers))

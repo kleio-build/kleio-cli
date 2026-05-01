@@ -21,6 +21,7 @@ import (
 
 	"github.com/kleio-build/kleio-cli/internal/ai"
 	"github.com/kleio-build/kleio-cli/internal/correlate/embed"
+	"github.com/kleio-build/kleio-cli/internal/correlate/entityoverlap"
 	"github.com/kleio-build/kleio-cli/internal/correlate/filepath"
 	"github.com/kleio-build/kleio-cli/internal/correlate/idreference"
 	"github.com/kleio-build/kleio-cli/internal/correlate/search"
@@ -125,6 +126,7 @@ func allCorrelators(cfg Config) []kleio.Correlator {
 		timewindow.New(cfg.TimeWindow),
 		idreference.New(),
 		filepath.New(),
+		entityoverlap.New(cfg.Store),
 	}
 	if cfg.Provider != nil && cfg.Provider.Available() {
 		cors = append(cors, embed.New(cfg.Provider))
