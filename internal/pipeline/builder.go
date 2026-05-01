@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kleio-build/kleio-cli/internal/ai"
+	astpkg "github.com/kleio-build/kleio-cli/internal/ast"
 	"github.com/kleio-build/kleio-cli/internal/correlate/embed"
 	"github.com/kleio-build/kleio-cli/internal/correlate/entityoverlap"
 	"github.com/kleio-build/kleio-cli/internal/correlate/filepath"
@@ -28,6 +29,7 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/correlate/timewindow"
 	"github.com/kleio-build/kleio-cli/internal/entity"
 	"github.com/kleio-build/kleio-cli/internal/ingest/discovery"
+	"github.com/kleio-build/kleio-cli/internal/localdb"
 	"github.com/kleio-build/kleio-cli/internal/synthesize/llm"
 	"github.com/kleio-build/kleio-cli/internal/synthesize/orphan"
 	"github.com/kleio-build/kleio-cli/internal/synthesize/plancluster"
@@ -97,6 +99,14 @@ func Build(cfg Config) *kleio.Pipeline {
 			_, _ = norm.LearnCoOccurrenceAliases(ctx)
 			return nil
 		},
+	}
+	// Wire AST symbol extraction when the store is a local SQLite store.
+	if ls, ok := cfg.Store.(*localdb.Store); ok {
+		si := astpkg.NewSymbolIndexer(ls)
+		hooks = append(hooks, func(ctx context.Context, signals []kleio.RawSignal) error {
+			_, _ = si.IndexSignals(ctx, signals)
+			return nil
+		})
 	}
 
 	return &kleio.Pipeline{
