@@ -24,6 +24,7 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 
 	kleio "github.com/kleio-build/kleio-core"
+	"github.com/kleio-build/kleio-cli/internal/entity"
 	"github.com/kleio-build/kleio-cli/internal/gitreader"
 )
 
@@ -113,15 +114,25 @@ func walkRepo(repoPath string, scope kleio.IngestScope) ([]kleio.RawSignal, erro
 		for _, fe := range c.FileEntries {
 			files = append(files, fe.Path)
 		}
+		entities := entity.Extract(c.Branch+" "+c.Message, kleio.AliasSourceCommitMessage)
+		for _, f := range files {
+			entities = append(entities, entity.ExtractedEntity{
+				Kind:       kleio.EntityKindFile,
+				Value:      entity.NormalizePath(f),
+				Confidence: 0.9,
+				Source:     kleio.AliasSourceCommitMessage,
+			})
+		}
 		md := map[string]any{
-			"sha":           c.Hash,
-			"author":        c.Author,
-			"author_email":  c.Email,
-			"branch":        c.Branch,
-			"is_merge":      c.IsMerge,
-			"files_changed": len(files),
-			"files":         files,
-			"repo_path":     abs,
+			"sha":                c.Hash,
+			"author":             c.Author,
+			"author_email":       c.Email,
+			"branch":             c.Branch,
+			"is_merge":           c.IsMerge,
+			"files_changed":      len(files),
+			"files":              files,
+			"repo_path":          abs,
+			"extracted_entities": entities,
 		}
 
 		out = append(out, kleio.RawSignal{

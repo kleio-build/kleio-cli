@@ -16,6 +16,7 @@ import (
 	"time"
 
 	kleio "github.com/kleio-build/kleio-core"
+	"github.com/kleio-build/kleio-cli/internal/entity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -105,10 +106,14 @@ func SignalsFromPlan(pp *ParsedPlan, repoName string) []kleio.RawSignal {
 	e := &signalEmitter{}
 	planID := planSourceID(pp.Path)
 
+	planEntities := entity.Extract(pp.Body, kleio.AliasSourcePlan)
+	planEntities = append(planEntities, entity.ExtractDecisionNames(pp.Body, kleio.AliasSourcePlan)...)
+
 	for _, t := range pp.Frontmatter.Todos {
 		if strings.TrimSpace(t.Content) == "" {
 			continue
 		}
+		todoEntities := entity.Extract(t.Content, kleio.AliasSourcePlan)
 		e.emit(kleio.RawSignal{
 			SourceType:   "cursor_plan",
 			SourceID:     planID + "#todo:" + t.ID,
@@ -118,11 +123,12 @@ func SignalsFromPlan(pp *ParsedPlan, repoName string) []kleio.RawSignal {
 			Timestamp:    pp.ModTime,
 			RepoName:     repoName,
 			Metadata: map[string]any{
-				"plan_path":      pp.Path,
-				"plan_name":      pp.Frontmatter.Name,
-				"plan_anchor_id": planID,
-				"todo_id":        t.ID,
-				"status":         t.Status,
+				"plan_path":          pp.Path,
+				"plan_name":          pp.Frontmatter.Name,
+				"plan_anchor_id":     planID,
+				"todo_id":            t.ID,
+				"status":             t.Status,
+				"extracted_entities": todoEntities,
 			},
 		})
 	}
@@ -131,6 +137,12 @@ func SignalsFromPlan(pp *ParsedPlan, repoName string) []kleio.RawSignal {
 	extractDeferred(pp, planID, repoName, e)
 	extractRisks(pp, planID, repoName, e)
 	extractUmbrella(pp, planID, repoName, e)
+
+	// Attach plan-wide entities to the umbrella signal (last emitted).
+	if len(e.signals) > 0 {
+		umbrella := &e.signals[len(e.signals)-1]
+		umbrella.Metadata["extracted_entities"] = planEntities
+	}
 
 	return e.signals
 }

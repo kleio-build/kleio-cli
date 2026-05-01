@@ -27,6 +27,7 @@ import (
 	"time"
 
 	kleio "github.com/kleio-build/kleio-core"
+	"github.com/kleio-build/kleio-cli/internal/entity"
 )
 
 // Ingester implements kleio.Ingester for Cursor agent transcripts.
@@ -191,6 +192,12 @@ func parseTranscript(path, repoName string, scope kleio.IngestScope) ([]kleio.Ra
 			return
 		}
 		seen[key] = true
+		if extracted := entity.Extract(s.Content, kleio.AliasSourceTranscript); len(extracted) > 0 {
+			if s.Metadata == nil {
+				s.Metadata = map[string]any{}
+			}
+			s.Metadata["extracted_entities"] = extracted
+		}
 		out = append(out, s)
 	}
 
