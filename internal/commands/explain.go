@@ -11,6 +11,7 @@ import (
 	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/ai"
 	"github.com/kleio-build/kleio-cli/internal/engine"
+	"github.com/kleio-build/kleio-cli/internal/entity"
 	"github.com/kleio-build/kleio-cli/internal/gitreader"
 	"github.com/kleio-build/kleio-cli/internal/render"
 	"github.com/spf13/cobra"
@@ -110,6 +111,7 @@ func buildExplainEntries(store kleio.Store, eng *engine.Engine, source, target, 
 	var allFiles []string
 	var keywords []string
 
+	commitEntitySet := map[string]bool{}
 	for _, rc := range rangeCommits {
 		entries = append(entries, engine.TimelineEntry{
 			Timestamp: rc.Timestamp,
@@ -129,6 +131,13 @@ func buildExplainEntries(store kleio.Store, eng *engine.Engine, source, target, 
 			if len(word) > 3 {
 				keywords = appendUnique(keywords, strings.ToLower(word))
 			}
+		}
+		// Extract entities from commits for entity-overlap scoring.
+		for _, ext := range entity.Extract(rc.Message, kleio.AliasSourceCommitMessage) {
+			commitEntitySet[ext.Kind+":"+entity.NormalizeLabel(ext.Kind, ext.Value)] = true
+		}
+		for _, f := range rc.Files {
+			commitEntitySet[kleio.EntityKindFile+":"+entity.NormalizeLabel(kleio.EntityKindFile, f)] = true
 		}
 	}
 
@@ -155,10 +164,12 @@ func buildExplainEntries(store kleio.Store, eng *engine.Engine, source, target, 
 
 	for _, ev := range events {
 		t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
-		score := engine.RecencyScoreWithHalfLife(ev.CreatedAt, params.RecencyHalfLife)*0.25 +
-			keywordScore(ev.Content, keywordQuery)*0.35 +
-			fileOverlapScore(ev.FilePath, allFiles)*0.25 +
-			idRefScore(ev.Content, rangeCommits)*0.15
+		entityScore := entityOverlapScore(ev.Content, commitEntitySet)
+		score := engine.RecencyScoreWithHalfLife(ev.CreatedAt, params.RecencyHalfLife)*0.20 +
+			keywordScore(ev.Content, keywordQuery)*0.30 +
+			fileOverlapScore(ev.FilePath, allFiles)*0.20 +
+			idRefScore(ev.Content, rangeCommits)*0.15 +
+			entityScore*0.15
 
 		if score < params.ScoreFloor {
 			continue
@@ -239,6 +250,27 @@ func fileOverlapScore(evPath string, commitFiles []string) float64 {
 		}
 	}
 	return 0
+}
+
+func entityOverlapScore(content string, commitEntitySet map[string]bool) float64 {
+	if len(commitEntitySet) == 0 {
+		return 0
+	}
+	extracted := entity.Extract(content, "")
+	if len(extracted) == 0 {
+		return 0
+	}
+	hits := 0
+	for _, ext := range extracted {
+		key := ext.Kind + ":" + entity.NormalizeLabel(ext.Kind, ext.Value)
+		if commitEntitySet[key] {
+			hits++
+		}
+	}
+	if hits == 0 {
+		return 0
+	}
+	return min(1.0, float64(hits)/float64(len(extracted)))
 }
 
 func idRefScore(content string, commits []gitreader.Commit) float64 {

@@ -193,6 +193,59 @@ func (s *Store) LearnCoOccurrenceAliases(ctx context.Context, threshold int) (in
 	return created, rows.Err()
 }
 
+// QueryEntityMentions returns all mentions for a given entity ID.
+func (s *Store) QueryEntityMentions(ctx context.Context, entityID string) ([]kleio.EntityMention, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, evidence_type, evidence_id, mention_context, confidence, created_at
+		 FROM entity_mentions WHERE entity_id = ?
+		 ORDER BY created_at DESC`,
+		entityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []kleio.EntityMention
+	for rows.Next() {
+		var m kleio.EntityMention
+		var ctx sql.NullString
+		if err := rows.Scan(&m.ID, &m.EntityID, &m.EvidenceType, &m.EvidenceID, &ctx, &m.Confidence, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		m.Context = ctx.String
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// FindEntityByAlias looks up an entity by alias string.
+func (s *Store) FindEntityByAlias(ctx context.Context, alias string) (*kleio.Entity, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT e.id, e.kind, e.label, e.normalized_label, e.repo_name,
+		    e.first_seen_at, e.last_seen_at, e.mention_count, e.confidence
+		 FROM entities e
+		 JOIN entity_aliases ea ON ea.entity_id = e.id
+		 WHERE ea.alias = ?
+		 ORDER BY ea.confidence DESC
+		 LIMIT 1`,
+		alias,
+	)
+
+	var e kleio.Entity
+	var repoName sql.NullString
+	err := row.Scan(&e.ID, &e.Kind, &e.Label, &e.NormalizedLabel, &repoName,
+		&e.FirstSeenAt, &e.LastSeenAt, &e.MentionCount, &e.Confidence)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	e.RepoName = repoName.String
+	return &e, nil
+}
+
 func (s *Store) FindEntitiesByEvidence(ctx context.Context, evidenceID string) ([]kleio.Entity, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT e.id, e.kind, e.label, e.normalized_label, e.repo_name,

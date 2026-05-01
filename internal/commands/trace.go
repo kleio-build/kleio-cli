@@ -10,6 +10,7 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/ai"
 	"github.com/kleio-build/kleio-cli/internal/engine"
 	"github.com/kleio-build/kleio-cli/internal/render"
+
 	"github.com/spf13/cobra"
 )
 
@@ -63,6 +64,8 @@ Examples:
 			var err error
 			if isFiletrace {
 				entries, err = eng.FileTimelineScoped(context.Background(), anchor, scopeRepo, sinceTime)
+			} else if engine.IsTicketAnchor(anchor) {
+				entries, err = eng.EntityTimelineScoped(context.Background(), anchor, scopeRepo, sinceTime)
 			} else {
 				entries, err = eng.TimelineScoped(context.Background(), anchor, scopeRepo, sinceTime)
 			}
