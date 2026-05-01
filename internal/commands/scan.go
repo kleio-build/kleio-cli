@@ -137,6 +137,12 @@ func parseSince(s string) (time.Time, error) {
 
 func parseRelativeTime(s string) (time.Time, error) {
 	now := time.Now()
+
+	// Shorthand: 30d, 7d, 24h, 2w, 3m
+	if t, ok := parseShorthandDuration(s, now); ok {
+		return t, nil
+	}
+
 	var n int
 	var unit string
 	if _, err := fmt.Sscanf(s, "%d %s ago", &n, &unit); err == nil {
@@ -151,7 +157,30 @@ func parseRelativeTime(s string) (time.Time, error) {
 			return now.Add(-time.Duration(n) * time.Hour), nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("cannot parse %q (try '3 days ago' or '2026-01-15')", s)
+	return time.Time{}, fmt.Errorf("cannot parse %q (try '30d', '7d', '24h', '3 days ago', or '2026-01-15')", s)
+}
+
+func parseShorthandDuration(s string, now time.Time) (time.Time, bool) {
+	if len(s) < 2 {
+		return time.Time{}, false
+	}
+	unit := s[len(s)-1]
+	nStr := s[:len(s)-1]
+	var n int
+	if _, err := fmt.Sscanf(nStr, "%d", &n); err != nil || n <= 0 {
+		return time.Time{}, false
+	}
+	switch unit {
+	case 'd':
+		return now.AddDate(0, 0, -n), true
+	case 'w':
+		return now.AddDate(0, 0, -7*n), true
+	case 'h':
+		return now.Add(-time.Duration(n) * time.Hour), true
+	case 'm':
+		return now.AddDate(0, -n, 0), true
+	}
+	return time.Time{}, false
 }
 
 func startsWith(s, prefix string) bool {

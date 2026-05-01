@@ -128,36 +128,43 @@ Everything in this section must work **without** `kleio login`, `~/.kleio/config
 
 | # | Step | Expected |
 |---|------|----------|
-| 25 | `kleio trace "auth"` | Prints trace report with timeline of commits mentioning "auth", segmented by date. Shows commits like "feat: add auth module" and "fix: auth token refresh bug" |
+| 25 | `kleio trace "auth"` | Prints structured report: About, Decisions, Open Threads, Code Changes, Evidence Quality, Next Steps |
 | 26 | `kleio trace auth.go` | Shows timeline specific to that file path |
 | 27 | `kleio trace --since 7d "checkout"` | Shows only recent results (our test commits are recent, so should return results) |
 | 28 | `kleio trace "auth" --json` | Valid JSON output, parseable by `jq` if available |
 | 29 | `kleio trace "totally-nonexistent-thing-12345"` | Exit code 1 (no results), stderr message "No results found" |
 | 30 | `echo | kleio trace "auth" --no-interactive` | No prompts, outputs results directly |
+| 30a | `kleio trace "auth" --format md` | Renders report as Markdown with `#` headings, table, bullet lists |
+| 30b | `kleio trace "auth" --format pdf --output auth.pdf` | Creates `auth.pdf`, starts with `%PDF-1.` header |
+| 30c | `kleio trace "auth" --format html --output auth.html` | Creates standalone HTML file with embedded styles |
+| 30d | `kleio trace "auth" --no-llm` | Skips LLM enrichment; report shows heuristic subject, no `[enriched by LLM]` tag |
+| 30e | `kleio trace "auth" --verbose` | Includes "Raw Timeline" section at the end |
 
 ### 3.2 `kleio explain`
 
 | # | Step | Expected |
 |---|------|----------|
-| 31 | `kleio explain HEAD~5 HEAD` | Shows explanation report with commit count, subsystems, and change details |
+| 31 | `kleio explain HEAD~5 HEAD` | Shows structured report; Code Changes section appears first (explain emphasis) |
 | 32 | `kleio explain HEAD~5 HEAD --json` | Valid JSON output |
 | 33 | `kleio explain HEAD~5 HEAD --no-interactive` | No prompts |
+| 33a | `kleio explain HEAD~5 HEAD --format pdf -o explain.pdf` | Creates explain.pdf |
 
 ### 3.3 `kleio incident`
 
 | # | Step | Expected |
 |---|------|----------|
-| 34 | `kleio incident "checkout returns 500"` | Shows incident report with suspicious commits ranked by relevance. The "fix: checkout returns 500 on empty cart" commit should rank highest |
+| 34 | `kleio incident "checkout returns 500"` | Shows structured report with Code Changes ranked by relevance |
 | 35 | `kleio incident --files internal/payments/checkout.go` | Narrows to commits touching that file path |
 | 36 | `kleio incident --since 7d "error"` | Shows recent error-related commits |
-| 37 | `kleio incident "checkout returns 500" --json` | Valid JSON with `suspects` array |
+| 37 | `kleio incident "checkout returns 500" --json` | Valid JSON with structured report |
 | 38 | `kleio incident "completely unrelated xyz"` | Exit code 1, "No suspicious changes found" message |
+| 38a | `kleio incident "checkout returns 500" --format md` | Renders as Markdown |
 
 ### 3.4 Shared flag consistency
 
 | # | Step | Expected |
 |---|------|----------|
-| 39 | For each of `trace`, `explain`, `incident`: verify `--help` shows `--json`, `--no-interactive`, and `--since` | All three commands have all three flags |
+| 39 | For each of `trace`, `explain`, `incident`: verify `--help` shows `--json`, `--format`, `--output`, `--verbose`, `--no-llm`, `--no-interactive`, and `--since` | All three commands have all flags |
 
 ---
 
@@ -266,8 +273,9 @@ Since MCP uses JSON-RPC over stdio, this is best tested via an actual MCP client
 
 | # | Step | Expected |
 |---|------|----------|
-| 73 | Ensure no `ai:` block in `~/.kleio/config.yaml` | |
-| 74 | `kleio trace "auth"` | Returns heuristic timeline (no LLM call). No error about missing API keys |
+| 73 | Ensure no `ai:` block in `~/.kleio/config.yaml` and Ollama is **not** running | |
+| 74 | `kleio trace "auth"` | Returns heuristic report (no LLM call). No error about missing API keys. No `[enriched by LLM]` tag |
+| 74a | `kleio trace "auth" --no-llm` | Same as above, but explicitly bypasses LLM even if Ollama were running |
 
 ### 7.2 Configure BYOK (OpenAI example)
 
@@ -283,15 +291,17 @@ ai:
 ```
 
 | 76 | `export OPENAI_API_KEY=sk-...` | Set the key |
-| 77 | `kleio trace "auth"` | Should produce an LLM-enhanced summary (richer than heuristic). If API fails, falls back to heuristic silently |
+| 77 | `kleio trace "auth"` | Should produce an LLM-enriched report (`[enriched by LLM]` tag, prose Subject, refined NextSteps). BYOK config takes priority over Ollama auto-detect |
 
-### 7.3 Ollama (local LLM)
+### 7.3 Ollama auto-detection
 
 | # | Step | Expected |
 |---|------|----------|
 | 78 | Install Ollama, pull a model: `ollama pull llama3` | |
-| 79 | Configure: `ai: { provider: ollama, model: llama3 }` | |
-| 80 | `kleio trace "auth"` | Uses local Ollama for summarization |
+| 79 | Remove `ai:` block from `~/.kleio/config.yaml` (or use a config without one) | No explicit BYOK config |
+| 80 | Start Ollama: `ollama serve` | Ollama listening on `localhost:11434` |
+| 81 | `kleio trace "auth"` | Auto-detects Ollama, uses it for enrichment. Report shows `[enriched by LLM]` |
+| 82 | Stop Ollama (`Ctrl-C`), then `kleio trace "auth"` | Falls back to heuristic (no crash, no error about unreachable Ollama) |
 
 ---
 
@@ -353,6 +363,63 @@ ai:
 
 ---
 
+## Section 11: Ingest pipeline (Phase 1-5 — Report Quality Fixes & Pipeline Architecture)
+
+> Pre-req: a workspace with `.cursor/plans/*.plan.md` files (e.g. `kleio-build/`) and a few git repos under it.
+
+### 11.1 `kleio ingest` (user-facing)
+
+| # | Step | Expected |
+|---|------|----------|
+| 96 | `kleio ingest --dry-run` | Prints per-stage counts: `ingest plan: N`, `ingest transcript: N`, `ingest git: N`, `correlate ...: N clusters`, `synthesize ...: N events (would persist)`. Exits 0, no DB writes |
+| 97 | `kleio ingest --source plan --dry-run` | Only `ingest plan` non-zero; transcript/git omitted |
+| 98 | `kleio ingest --all-repos --dry-run` | Counts higher than scoped run; logs `scope_mode=all_repos all_repos=true` |
+| 99 | `kleio ingest --no-llm --dry-run` | Logs `llm=false`; correlation falls back to `search` (FTS5) instead of `embed` |
+| 100 | `kleio ingest` (no `--dry-run`) | Persists events; final line reports counts of inserted events and links |
+| 101 | `kleio ingest --reimport` | Wipes prior synthesized events first, then ingests; idempotent counts on re-run |
+| 102 | `kleio import cursor` | Still works — aliases through the new pipeline for back-compat |
+
+### 11.2 `--all-repos` on report commands
+
+| # | Step | Expected |
+|---|------|----------|
+| 103 | `cd <some-repo>` then `kleio trace "og" --since 60d` | Default scope is current repo (commits/events filtered by repo name) |
+| 104 | `kleio trace "og" --since 60d --all-repos` | Cross-repo retrieval; result count >= scoped count |
+| 105 | `kleio explain HEAD~5 HEAD --all-repos` | Pulls in events from other repos when stitching the explanation |
+| 106 | `kleio incident "PDF render bug" --all-repos` | Cross-repo incident search |
+
+### 11.3 Anchor aliases (`~/.kleio/aliases.yaml`)
+
+| # | Step | Expected |
+|---|------|----------|
+| 107 | Create `~/.kleio/aliases.yaml` with `aliases: { og: [opengraph, og-image] }` | File created |
+| 108 | `kleio trace "og" --since 60d` | Recall now includes commits/events containing `opengraph` or `og-image`, not just literal `og` |
+| 109 | With Ollama running, repeat 108 | Additional LLM-suggested terms widen recall further; first call hits LLM, subsequent calls hit `~/.kleio/alias-cache.json` |
+| 110 | `cat ~/.kleio/alias-cache.json` | JSON cache file with anchor hashes -> term arrays + `cached_at` timestamp |
+
+### 11.4 Hidden `kleio dev` commands (debugging the pipeline)
+
+| # | Step | Expected |
+|---|------|----------|
+| 111 | `kleio dev ingest plan --dry-run` | Prints up to N RawSignals from plan parser only, no DB writes |
+| 112 | `kleio dev ingest transcript --dry-run` | RawSignals from narrow-accept transcript parser; no narration noise |
+| 113 | `kleio dev ingest git --dry-run` | One RawSignal per recent commit |
+| 114 | `kleio dev ingest all --dry-run` | Combined output from all ingesters |
+| 115 | `kleio dev correlate` | Runs ingest + every correlator; prints clusters with link reasons + confidence |
+| 116 | `kleio dev synthesize` | Runs full pipeline; prints emitted Events grouped by synthesizer with deduplicated counts |
+| 117 | `kleio dev smoke-report` | Renders a sample report in every format (text, md, html, pdf, json); validates PDF reads back cleanly via dslipak/pdf |
+
+### 11.5 Quality gates
+
+| # | Step | Expected |
+|---|------|----------|
+| 118 | `kleio query captures --json \| jq 'length'` | Total cursor-derived signals < 1000 (down from ~2900 baseline) |
+| 119 | `kleio query captures --signal-type=work_item --limit 50` | No raw narration fragments — every work_item is anchored to a plan, deferral, or explicit tool call |
+| 120 | `kleio trace "og" --format pdf -o /tmp/og.pdf` | PDF renders cleanly (no `â€¢` mojibake, no overflow); all sections present |
+| 121 | `kleio ingest` end-to-end on `kleio-build/` workspace | Completes in < 60s |
+
+---
+
 ## Result Summary Template
 
 ```
@@ -373,8 +440,9 @@ Section 7 (BYOK LLM):           __ /  8 passed (or N/A)
 Section 8 (Edge Cases):          __ / 11 passed
 Section 9 (Scan Regression):     __ /  3 passed
 Section 10 (Import Regression):  __ /  1 passed
+Section 11 (Ingest Pipeline):    __ / 26 passed
 
-Total:                           __ / 89 passed
+Total:                           __ / 115 passed
 
 Blocking issues:
   1. ____________

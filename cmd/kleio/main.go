@@ -130,6 +130,7 @@ func main() {
 	rootCmd.AddCommand(commands.NewInitCmd(getClient))
 	rootCmd.AddCommand(commands.NewStatusCmd(getClient))
 	rootCmd.AddCommand(commands.NewImportCmd(getStore, getClient))
+	rootCmd.AddCommand(commands.NewIngestCmd(getStore))
 	rootCmd.AddCommand(commands.NewCheckCmd(getClient))
 	rootCmd.AddCommand(commands.NewScanCmd(getStore))
 	rootCmd.AddCommand(commands.NewTraceCmd(getStore))
@@ -137,6 +138,7 @@ func main() {
 	rootCmd.AddCommand(commands.NewIncidentCmd(getStore))
 	rootCmd.AddCommand(commands.NewSyncCmd(getClient))
 	rootCmd.AddCommand(commands.NewIndexCmd())
+	rootCmd.AddCommand(newDevCmd())
 
 	mcpCmd := &cobra.Command{
 		Use:          "mcp",

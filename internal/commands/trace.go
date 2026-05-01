@@ -2,15 +2,14 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/ai"
 	"github.com/kleio-build/kleio-cli/internal/engine"
+	"github.com/kleio-build/kleio-cli/internal/render"
 	"github.com/spf13/cobra"
 )
 
@@ -18,8 +17,13 @@ import (
 func NewTraceCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
 		since         string
+		format        string
+		output        string
+		verbose       bool
+		noLLM         bool
 		asJSON        bool
 		noInteractive bool
+		allRepos      bool
 	)
 
 	cmd := &cobra.Command{
@@ -30,7 +34,8 @@ func NewTraceCmd(getStore func() kleio.Store) *cobra.Command {
 Examples:
   kleio trace src/auth/service.go
   kleio trace "checkout flow"
-  kleio trace --since 7d "JWT refresh"`,
+  kleio trace --since 7d "JWT refresh"
+  kleio trace --format pdf --output report.pdf "auth"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anchor := strings.Join(args, " ")
@@ -41,27 +46,31 @@ Examples:
 			}
 			store := getStore()
 
-			provider, _ := ai.ResolveProvider(ai.LoadConfig())
-			eng := engine.New(store, provider)
+			provider := ai.AutoDetect(ai.LoadConfig())
+			if noLLM {
+				provider = ai.Noop{}
+			}
+			eng := engine.New(store, provider).WithExpander(loadAnchorExpander(provider))
 
 			sinceTime, _ := parseSince(since)
+
+			scopeRepo := ""
+			if !allRepos {
+				scopeRepo = currentRepoName()
+			}
 
 			var entries []engine.TimelineEntry
 			var err error
 			if isFiletrace {
-				entries, err = eng.FileTimeline(context.Background(), anchor, sinceTime)
+				entries, err = eng.FileTimelineScoped(context.Background(), anchor, scopeRepo, sinceTime)
 			} else {
-				entries, err = eng.Timeline(context.Background(), anchor, sinceTime)
+				entries, err = eng.TimelineScoped(context.Background(), anchor, scopeRepo, sinceTime)
 			}
 			if err != nil {
 				return fmt.Errorf("trace failed: %w", err)
 			}
 
 			if len(entries) == 0 {
-				if asJSON {
-					json.NewEncoder(os.Stdout).Encode([]engine.TimelineEntry{})
-					os.Exit(1)
-				}
 				if !noInteractive && isInteractive() {
 					entries = runTraceRefinement(os.Stdin, os.Stderr, store, anchor, sinceTime)
 				}
@@ -71,82 +80,28 @@ Examples:
 				}
 			}
 
-			if asJSON {
-				return json.NewEncoder(os.Stdout).Encode(entries)
+			if asJSON && format == "" {
+				format = "json"
 			}
 
-			return renderTraceReport(os.Stdout, anchor, entries, eng)
+			report := eng.BuildReport(context.Background(), anchor, "trace", entries)
+			if !noLLM {
+				_ = report.Enrich(context.Background(), provider)
+			}
+			return render.Render(os.Stdout, format, output, report, verbose)
 		},
 	}
 
 	cmd.Flags().StringVar(&since, "since", "", "Time window filter (e.g. 24h, 7d, 3m)")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON for CI/CD pipelines")
+	cmd.Flags().StringVar(&format, "format", "text", "Output format: text, md, html, pdf, json")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Write output to file (required for pdf/html if you want a specific path)")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Include raw timeline in output")
+	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment even if available")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (shorthand for --format json)")
 	cmd.Flags().BoolVar(&noInteractive, "no-interactive", false, "Suppress prompts")
+	cmd.Flags().BoolVar(&allRepos, "all-repos", false, "Include signals from all indexed repositories (default: current repo only)")
 
 	return cmd
-}
-
-func renderTraceReport(w *os.File, anchor string, entries []engine.TimelineEntry, eng *engine.Engine) error {
-	fmt.Fprintf(w, "=== Trace Report: %s ===\n\n", anchor)
-	fmt.Fprintf(w, "Found %d events across the timeline.\n\n", len(entries))
-
-	segments := segmentTimeline(entries)
-	for _, seg := range segments {
-		fmt.Fprintf(w, "--- %s ---\n", seg.Label)
-		for _, e := range seg.Entries {
-			ts := e.Timestamp.Format("2006-01-02 15:04")
-			icon := kindIcon(e.Kind)
-			fmt.Fprintf(w, "  %s %s %s\n", icon, ts, e.Summary)
-		}
-		fmt.Fprintln(w)
-	}
-
-	var summaryEvents []kleio.Event
-	for _, e := range entries {
-		summaryEvents = append(summaryEvents, kleio.Event{
-			SignalType: e.Kind,
-			Content:    e.Summary,
-			CreatedAt:  e.Timestamp.Format(time.RFC3339),
-		})
-	}
-	summaryText, _ := eng.Summarize(context.Background(), summaryEvents)
-	if summaryText != "" && summaryText != "No events to summarize." {
-		fmt.Fprintf(w, "Summary: %s\n", summaryText)
-	}
-
-	return nil
-}
-
-type segment struct {
-	Label   string
-	Entries []engine.TimelineEntry
-}
-
-func segmentTimeline(entries []engine.TimelineEntry) []segment {
-	if len(entries) == 0 {
-		return nil
-	}
-
-	var segments []segment
-	var current segment
-	var lastDate string
-
-	for _, e := range entries {
-		date := e.Timestamp.Format("2006-01-02")
-		if date != lastDate {
-			if len(current.Entries) > 0 {
-				segments = append(segments, current)
-			}
-			current = segment{Label: date}
-			lastDate = date
-		}
-		current.Entries = append(current.Entries, e)
-	}
-	if len(current.Entries) > 0 {
-		segments = append(segments, current)
-	}
-
-	return segments
 }
 
 func kindIcon(kind string) string {

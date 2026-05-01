@@ -94,6 +94,11 @@ CREATE INDEX IF NOT EXISTS idx_commit_files_path ON commit_files(file_path);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_links_dedup ON links(source_id, target_id, link_type);
 CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_id);
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_id);
+-- Cluster reconstruction filters by (link_type, target_id) to find every
+-- member of a cluster given its anchor signal id; pipeline persistence
+-- inserts via these columns at high volume.
+CREATE INDEX IF NOT EXISTS idx_links_type_target ON links(link_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_links_type_source ON links(link_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_identifiers_kind ON identifiers(kind);
 CREATE INDEX IF NOT EXISTS idx_identifiers_value ON identifiers(value);
 

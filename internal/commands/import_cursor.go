@@ -2,160 +2,104 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"time"
 
 	kleio "github.com/kleio-build/kleio-core"
-	"github.com/kleio-build/kleio-cli/internal/cursorimport"
-	"github.com/kleio-build/kleio-cli/internal/privacy"
+	"github.com/kleio-build/kleio-cli/internal/ai"
+	"github.com/kleio-build/kleio-cli/internal/ingest/discovery"
+	"github.com/kleio-build/kleio-cli/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 
 func newImportCursorCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
-		project string
-		dryRun  bool
+		dryRun   bool
+		allRepos bool
+		reimport bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "cursor",
-		Short: "Import Cursor agent transcripts as Kleio captures",
-		Long: `Discovers and parses Cursor agent-transcript JSONL files, extracting
-decisions, work items, and checkpoints from tool-call sequences.
+		Short: "Import Cursor plans and transcripts (aliases to kleio ingest --source plan,transcript)",
+		Long: `Back-compat alias for: kleio ingest --source plan,transcript
 
-Signals that were already captured via Kleio MCP tools are identified
-and skipped. The privacy filter redacts credentials before submission.
+Discovers and parses Cursor plan files and agent-transcript JSONL files,
+runs the ingest -> correlate -> synthesize pipeline, and persists captures.
+
+By default only artifacts from the current repository's Cursor project
+are imported (current_repo scope). Use --all-repos to widen scope.
 
 Examples:
   kleio import cursor --dry-run
-  kleio import cursor --project c-Users-brenn-my-project`,
+  kleio import cursor --all-repos --dry-run
+  kleio import cursor --reimport`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var transcripts []string
-			var err error
-
-			if project != "" {
-				transcripts, err = cursorimport.DiscoverTranscriptsForProject(project)
-			} else {
-				transcripts, err = cursorimport.DiscoverTranscripts()
-			}
+			cwd, err := os.Getwd()
 			if err != nil {
-				return fmt.Errorf("discover transcripts: %w", err)
+				return fmt.Errorf("getwd: %w", err)
+			}
+			d := discovery.Resolve(cwd, allRepos)
+			provider := ai.AutoDetect(nil)
+
+			cfg := pipeline.Config{
+				Discovery:  d,
+				Provider:   provider,
+				TimeWindow: 15 * time.Minute,
+				EnabledIngesters: map[string]bool{
+					"plan":       true,
+					"transcript": true,
+				},
+			}
+			if !dryRun {
+				cfg.Store = getStore()
 			}
 
-			if len(transcripts) == 0 {
-				fmt.Println("No Cursor agent transcripts found.")
-				return nil
-			}
+			scope := kleio.IngestScope{AllRepos: allRepos}
 
-			fmt.Printf("Found %d transcript files. Parsing...\n", len(transcripts))
+			fmt.Fprintln(os.Stderr, "kleio import cursor: running pipeline (plan + transcript)...")
+			fmt.Fprintf(os.Stderr, "  scope_mode=%s all_repos=%v llm=%v\n",
+				d.CursorScope.Mode, allRepos, provider != nil && provider.Available())
 
-			parser := cursorimport.NewTranscriptParser()
-			pf := privacy.NewFilter(privacy.DefaultRules())
-
-			var allSignals []cursorimport.Signal
-			var totalFiles int
-			seenHashes := make(map[string]bool)
-
-			for _, path := range transcripts {
-				result, err := parser.ParseFile(path)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "warning: skipping %s: %v\n", filepath.Base(path), err)
-					continue
+			if reimport && !dryRun {
+				store := cfg.Store
+				if err := wipeCursorPipelineEvents(cmd.Context(), store); err != nil {
+					return fmt.Errorf("--reimport wipe failed: %w", err)
 				}
-				totalFiles++
-
-				for _, sig := range result.Signals {
-					hash := sig.Hash()
-					if seenHashes[hash] {
-						continue
-					}
-					seenHashes[hash] = true
-					allSignals = append(allSignals, sig)
-				}
-			}
-
-			newSignals := filterNewSignals(allSignals)
-			alreadyCaptured := len(allSignals) - len(newSignals)
-
-			fmt.Printf("Parsed %d files: %d signals found (%d already captured, %d new)\n",
-				totalFiles, len(allSignals), alreadyCaptured, len(newSignals))
-
-			if len(newSignals) == 0 {
-				fmt.Println("Nothing new to import.")
-				return nil
 			}
 
 			if dryRun {
-				fmt.Println("\nDry run — would import:")
-				for _, sig := range newSignals {
-					content := truncate(pf.Redact(sig.Content), 80)
-					fmt.Printf("  [%s] %s\n", sig.SignalType, content)
-				}
-				return nil
+				return runDryRun(cmd.Context(), cfg, scope)
 			}
-
-			store := getStore()
-			ctx := context.Background()
-			imported := 0
-			for _, sig := range newSignals {
-				content := pf.Redact(sig.Content)
-				evt := buildCursorEvent(sig, content)
-				if err := store.CreateEvent(ctx, evt); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to import signal: %v\n", err)
-					continue
-				}
-				imported++
-			}
-
-			fmt.Printf("\nImported %d/%d new signals as captures.\n", imported, len(newSignals))
-			return nil
+			return runPersisted(cmd.Context(), cfg, scope)
 		},
 	}
 
-	cmd.Flags().StringVar(&project, "project", "", "Cursor project slug to import from (default: all projects)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be imported without sending")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be imported without persisting")
+	cmd.Flags().BoolVar(&allRepos, "all-repos", false, "Override scope to import from every Cursor project on disk")
+	cmd.Flags().BoolVar(&reimport, "reimport", false, "Delete existing cursor-derived events before re-running ingest")
 	return cmd
 }
 
-func filterNewSignals(signals []cursorimport.Signal) []cursorimport.Signal {
-	var result []cursorimport.Signal
-	for _, s := range signals {
-		if !s.AlreadyCaptured {
-			result = append(result, s)
+// wipeCursorPipelineEvents removes plan + transcript synthesized events.
+// Fail-fast on any error.
+func wipeCursorPipelineEvents(ctx context.Context, store kleio.Store) error {
+	type bulkDeleter interface {
+		DeleteEventsBySourceType(ctx context.Context, sourceType string) (int, error)
+	}
+	d, ok := store.(bulkDeleter)
+	if !ok {
+		return fmt.Errorf("store does not support DeleteEventsBySourceType (need localdb backend)")
+	}
+	total := 0
+	for _, st := range []string{"cursor_plan", "cursor_transcript", "llm_summary"} {
+		n, err := d.DeleteEventsBySourceType(ctx, st)
+		if err != nil {
+			return fmt.Errorf("wipe %s: %w", st, err)
 		}
+		total += n
 	}
-	return result
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}
-
-func buildCursorEvent(sig cursorimport.Signal, redactedContent string) *kleio.Event {
-	sd := map[string]interface{}{
-		"ingest_source": "cursor_transcript",
-		"signal_hash":   sig.Hash(),
-	}
-	if sig.SourceFile != "" {
-		sd["file"] = sig.SourceFile
-	}
-	sdJSON, _ := json.Marshal(sd)
-
-	provenance := "Imported from Cursor agent transcript"
-	if sig.SourceFile != "" {
-		provenance += " (" + filepath.Base(sig.SourceFile) + ")"
-	}
-
-	return &kleio.Event{
-		Content:         redactedContent,
-		SignalType:      sig.SignalType,
-		SourceType:      kleio.SourceTypeCursorTranscript,
-		StructuredData:  string(sdJSON),
-		FreeformContext: provenance,
-	}
+	fmt.Fprintf(os.Stderr, "--reimport: deleted %d existing cursor-derived event(s).\n", total)
+	return nil
 }

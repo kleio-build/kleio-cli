@@ -69,6 +69,11 @@ func DiscoverTranscriptsForProject(projectSlug string) ([]string, error) {
 	return transcripts, nil
 }
 
+// CursorProjectsDir is the exported alias for cursorProjectsDir, used
+// by internal/ingest/discovery to enumerate every Cursor project slug
+// when scope=all.
+func CursorProjectsDir() string { return cursorProjectsDir() }
+
 func cursorProjectsDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

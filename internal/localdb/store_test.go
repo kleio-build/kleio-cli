@@ -438,3 +438,85 @@ func TestStore_Search_FindsEventsAndCommits(t *testing.T) {
 	assert.True(t, kinds["event"])
 	assert.True(t, kinds["commit"])
 }
+
+// --- DeleteEventsBySourceType ---
+
+func TestStore_DeleteEventsBySourceType_RemovesOnlyMatching(t *testing.T) {
+	s := newTestStore(t).(*localdb.Store)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreateEvent(ctx, &kleio.Event{
+		SignalType: kleio.SignalTypeWorkItem,
+		Content:    "from cursor",
+		SourceType: kleio.SourceTypeCursorTranscript,
+	}))
+	require.NoError(t, s.CreateEvent(ctx, &kleio.Event{
+		SignalType: kleio.SignalTypeWorkItem,
+		Content:    "from cursor 2",
+		SourceType: kleio.SourceTypeCursorTranscript,
+	}))
+	require.NoError(t, s.CreateEvent(ctx, &kleio.Event{
+		SignalType: kleio.SignalTypeDecision,
+		Content:    "manual decision",
+		SourceType: kleio.SourceTypeManual,
+	}))
+
+	n, err := s.DeleteEventsBySourceType(ctx, kleio.SourceTypeCursorTranscript)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+
+	all, err := s.ListEvents(ctx, kleio.EventFilter{})
+	require.NoError(t, err)
+	assert.Len(t, all, 1)
+	assert.Equal(t, kleio.SourceTypeManual, all[0].SourceType)
+
+	// FTS index should also be cleansed: a search for the deleted content
+	// must return zero results (otherwise re-imports would produce ghost
+	// matches).
+	hits, err := s.Search(ctx, "cursor", kleio.SearchOpts{})
+	require.NoError(t, err)
+	for _, h := range hits {
+		assert.NotEqual(t, "from cursor", h.Content)
+		assert.NotEqual(t, "from cursor 2", h.Content)
+	}
+}
+
+// TestStore_AcceptsPipelineLinkTypes guards Task 1.4 acceptance: every
+// new pipeline LinkType constant must round-trip through CreateLink ->
+// QueryLinks without schema-level rejection (link_type is freeform TEXT
+// today; this test is the canary for any future CHECK constraint).
+func TestStore_AcceptsPipelineLinkTypes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, lt := range []string{
+		kleio.LinkTypeClusterAnchor,
+		kleio.LinkTypeCorrelatedWith,
+		kleio.LinkTypeDerivedFrom,
+		kleio.LinkTypeParentSignal,
+	} {
+		require.NoError(t, s.CreateLink(ctx, &kleio.Link{
+			SourceID: "src-" + lt, TargetID: "tgt-" + lt, LinkType: lt,
+		}), "create link with type %s", lt)
+	}
+
+	got, err := s.QueryLinks(ctx, kleio.LinkFilter{LinkType: kleio.LinkTypeClusterAnchor})
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+	assert.Equal(t, kleio.LinkTypeClusterAnchor, got[0].LinkType)
+}
+
+func TestStore_DeleteEventsBySourceType_NoMatchingIsNoOp(t *testing.T) {
+	s := newTestStore(t).(*localdb.Store)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreateEvent(ctx, &kleio.Event{
+		SignalType: kleio.SignalTypeDecision,
+		Content:    "manual",
+		SourceType: kleio.SourceTypeManual,
+	}))
+
+	n, err := s.DeleteEventsBySourceType(ctx, kleio.SourceTypeCursorTranscript)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}

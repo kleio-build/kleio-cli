@@ -130,8 +130,13 @@ func runInitLocalPhase(dir string, noIndex bool, dryRun bool) error {
 }
 
 func importCursorSignals(store *localdb.Store) {
-	transcripts, err := cursorimport.DiscoverTranscripts()
-	if err != nil || len(transcripts) == 0 {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	scope := cursorimport.LoadCursorScope(cwd)
+	scoped, err := cursorimport.DiscoverTranscriptsScoped(scope, cwd)
+	if err != nil || len(scoped) == 0 {
 		return
 	}
 
@@ -140,8 +145,8 @@ func importCursorSignals(store *localdb.Store) {
 	seenHashes := make(map[string]bool)
 	imported := 0
 
-	for _, path := range transcripts {
-		result, err := parser.ParseFile(path)
+	for _, t := range scoped {
+		result, err := parser.ParseFile(t.Path)
 		if err != nil {
 			continue
 		}
@@ -156,7 +161,7 @@ func importCursorSignals(store *localdb.Store) {
 			seenHashes[hash] = true
 
 			content := pf.Redact(sig.Content)
-			evt := buildCursorEvent(sig, content)
+			evt := buildCursorEvent(sig, content, t)
 			if err := store.CreateEvent(context.Background(), evt); err != nil {
 				continue
 			}
@@ -165,7 +170,7 @@ func importCursorSignals(store *localdb.Store) {
 	}
 
 	if imported > 0 {
-		fmt.Printf("Imported %d signals from %d Cursor transcript files\n", imported, len(transcripts))
+		fmt.Printf("Imported %d signals from %d Cursor transcript files\n", imported, len(scoped))
 	}
 }
 

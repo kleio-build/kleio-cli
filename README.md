@@ -188,6 +188,108 @@ kleio capture "task" --json
 kleio backlog list --json
 ```
 
+## Reports & Output Formats
+
+The `trace`, `explain`, and `incident` commands produce structured reports with sections for **About**, **Decisions**, **Open Threads**, **Code Changes**, **Evidence Quality**, and **Next Steps**. When Ollama is running locally (auto-detected at `localhost:11434`) or a BYOK provider is configured, the report is enriched with LLM-generated prose and semantic deduplication.
+
+```bash
+kleio trace "auth" --format text       # default: human-readable plain text
+kleio trace "auth" --format md         # Markdown with tables and headers
+kleio trace "auth" --format html -o report.html   # standalone HTML
+kleio trace "auth" --format pdf -o report.pdf      # PDF via go-pdf/fpdf
+kleio trace "auth" --format json       # machine-readable JSON
+kleio trace "auth" --verbose           # append raw timeline to output
+kleio trace "auth" --no-llm            # skip LLM enrichment
+```
+
+The same flags work for `kleio explain` and `kleio incident`.
+
+By default reports filter to the **current repository** (detected from the git remote). Pass `--all-repos` to widen any of `trace`, `explain`, or `incident` across every indexed repo:
+
+```bash
+kleio trace "og" --since 60d                # current repo only
+kleio trace "og" --since 60d --all-repos    # cross-repo retrieval
+```
+
+## Ingest pipeline
+
+`kleio ingest` runs a four-stage local-first pipeline that turns the artifacts you already produce — Cursor plans, Cursor transcripts, git history — into a queryable corpus of `Event` rows.
+
+```
+sources --> Ingester --> RawSignal --> Correlator --> Cluster --> Synthesizer --> Event
+                                                                                  |
+                                                                                  v
+                                                                              SQLite
+```
+
+| Stage | Implementations |
+|-------|------------------|
+| **Ingest**      | `plan` (`.cursor/plans/*.plan.md` multi-pass parser), `transcript` (narrow-accept Cursor exports), `git` (commits via go-git) |
+| **Correlate**   | `time_window`, `id_reference` (KL-N / PR-# / plan hashes / SHAs), `file_path`, `search` (FTS5 locally / embeddings on cloud), `embed` (auto-promoted when an LLM is available) |
+| **Synthesize**  | `plan_cluster` (umbrella + todos + decisions + deferred children), `orphan` (only explicit pass-throughs), `llm` (optional summary refinement) |
+
+```bash
+kleio ingest                          # all sources, current repo
+kleio ingest --source plan            # plans only
+kleio ingest --source transcript,git
+kleio ingest --all-repos              # cross-repo
+kleio ingest --since 30d              # incremental
+kleio ingest --no-llm                 # disable EmbedCorrelator + LLMSynthesizer
+kleio ingest --reimport               # wipe synthesized signals first
+kleio ingest --dry-run                # preview without writing
+```
+
+`kleio import cursor` continues to work and aliases to plan + transcript ingestion for back-compat.
+
+For per-stage debugging, hidden dev commands print their output without persisting:
+
+```bash
+kleio dev ingest plan       # one ingester at a time
+kleio dev ingest all
+kleio dev correlate         # full ingest + every correlator
+kleio dev synthesize        # full ingest + correlate + every synthesizer
+kleio dev smoke-report      # render trace/explain/incident reports in every format with PDF read-back validation
+```
+
+### Anchor aliases
+
+`trace`, `explain`, and `incident` widen the search anchor through `~/.kleio/aliases.yaml`. Each alias is OR'd into the FTS5 query and commit-message LIKE matcher.
+
+```yaml
+aliases:
+  og: [opengraph, og-image, "og:image", twitter:card]
+  auth: [authentication, login, jwt, session]
+  pr: [pull request, code review, review request]
+```
+
+When an `ai.Provider` (Ollama or BYOK) is available, the expander additionally asks the model for 3-5 short related terms and unions them with the static set. Responses are cached at `~/.kleio/alias-cache.json` for 30 days.
+
+### Multi-repo workspaces
+
+By default every command scopes to the current repository — detected from the git remote in the working directory. This is deliberate: running `kleio trace "auth"` inside the `kleio-cli` repo surfaces only `kleio-cli` signals, matching the scope established at ingest time.
+
+Pass `--all-repos` to widen scope across every indexed repo:
+
+```bash
+kleio ingest --all-repos             # ingest plans + transcripts + git from all projects
+kleio trace "auth" --all-repos       # cross-repo retrieval
+kleio explain main.go --all-repos    # cross-repo file history
+kleio incident --all-repos           # cross-repo incident view
+```
+
+Scope is determined by `CursorScope.Mode` (configured via `.kleio/config.yaml` or auto-detected). When `--all-repos` is absent the CLI calls `currentRepoName()` and passes it as a filter on every `Store.QueryCommits` and `Store.ListEvents` call.
+
+### Adding a new ingest source
+
+A source is anything that produces `kleio.RawSignal`s. Sketch for a Slack ingester:
+
+1. Implement `kleio.Ingester` in `internal/ingest/slack/ingester.go`. `Ingest(ctx, scope) ([]RawSignal, error)` is the only required method. Each Slack message becomes one `RawSignal` with `SourceType = "slack"`, `SourceID = <channel>:<ts>`, `Content = message.text`, and `Metadata = {channel, thread_ts, user, permalink}`.
+2. Register the ingester in `internal/pipeline/builder.go` `Build`. Wire any source-specific config (workspace token, channel allow-list) through the `Config` struct.
+3. Add scope discovery to `internal/ingest/discovery/discovery.go` if the source needs to know which Slack workspaces / channels to walk.
+4. Optionally extend `internal/correlate/idreference/correlator.go` to recognize Slack permalinks so commits / plans referencing a thread can join the same cluster.
+
+The same template applies to Linear, GitHub PRs, Notion, etc. Every ingester gets free time-window, file-path, ID-reference, and semantic correlation — synthesis layers do not need to know which source the signal came from.
+
 ## MCP (Cursor and other editors)
 
 Use the **`kleio` binary** with the `mcp` subcommand (stdio transport). Add to `.cursor/mcp.json`:

@@ -67,7 +67,7 @@ func TestClassifyRisk_BugFix(t *testing.T) {
 	assert.Equal(t, "bug_fix_nearby", classifyRisk(c, nil, nil))
 }
 
-func TestBuildIncidentReport(t *testing.T) {
+func TestBuildIncidentEntries(t *testing.T) {
 	store := newTestStoreForCommands(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -88,17 +88,10 @@ func TestBuildIncidentReport(t *testing.T) {
 	}))
 
 	eng := engine.New(store, nil)
-	report, err := buildIncidentReport(ctx, eng, store,
-		"checkout returns 500", nil, now.Add(-24*time.Hour))
+	entries, err := buildIncidentEntries(ctx, eng, store,
+		"checkout returns 500", nil, now.Add(-24*time.Hour), "")
 	require.NoError(t, err)
-
-	assert.Greater(t, len(report.Suspects), 0)
-	assert.Equal(t, "checkout returns 500", report.Signal)
-
-	if len(report.Suspects) > 0 {
-		assert.Greater(t, report.Suspects[0].Score, report.Suspects[len(report.Suspects)-1].Score,
-			"suspects should be sorted by score descending")
-	}
+	assert.Greater(t, len(entries), 0)
 }
 
 func TestParseSinceOrDefault(t *testing.T) {

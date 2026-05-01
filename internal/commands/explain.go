@@ -2,10 +2,8 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -13,33 +11,21 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/ai"
 	"github.com/kleio-build/kleio-cli/internal/engine"
 	"github.com/kleio-build/kleio-cli/internal/gitreader"
+	"github.com/kleio-build/kleio-cli/internal/render"
 	"github.com/spf13/cobra"
 )
-
-// ExplainReport is the structured output of `kleio explain`.
-type ExplainReport struct {
-	Source     string            `json:"source"`
-	Target     string            `json:"target"`
-	Commits    int               `json:"commits"`
-	Subsystems map[string]int    `json:"subsystems"`
-	Decisions  []string          `json:"decisions,omitempty"`
-	Summary    string            `json:"summary"`
-	Details    []ExplainDetail   `json:"details"`
-}
-
-// ExplainDetail is a single change group.
-type ExplainDetail struct {
-	Subsystem string   `json:"subsystem"`
-	Files     []string `json:"files"`
-	Summary   string   `json:"summary"`
-}
 
 // NewExplainCmd creates the `kleio explain` command.
 func NewExplainCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
-		asJSON        bool
 		since         string
+		format        string
+		output        string
+		verbose       bool
+		noLLM         bool
+		asJSON        bool
 		noInteractive bool
+		allRepos      bool
 	)
 
 	cmd := &cobra.Command{
@@ -50,150 +36,87 @@ func NewExplainCmd(getStore func() kleio.Store) *cobra.Command {
 Examples:
   kleio explain HEAD~5 HEAD
   kleio explain main feature/auth-refactor
-  kleio explain v1.2.0 v1.3.0`,
+  kleio explain v1.2.0 v1.3.0
+  kleio explain --format md HEAD~10 HEAD`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			source, target := args[0], args[1]
 			store := getStore()
 
-			provider, _ := ai.ResolveProvider(ai.LoadConfig())
-			eng := engine.New(store, provider)
+			provider := ai.AutoDetect(ai.LoadConfig())
+			if noLLM {
+				provider = ai.Noop{}
+			}
+			eng := engine.New(store, provider).WithExpander(loadAnchorExpander(provider))
 			_ = noInteractive
 
-			rangeCommits, err := gitreader.CommitRange(".", source, target)
-			if err != nil {
-				sinceTime, _ := parseSince(since)
-				entries, tlErr := eng.Timeline(context.Background(), "", sinceTime)
-				if tlErr != nil {
-					return fmt.Errorf("explain failed: %w", tlErr)
-				}
-				report := buildExplainReport(source, target, entries, eng)
-				if asJSON {
-					return json.NewEncoder(os.Stdout).Encode(report)
-				}
-				return renderExplainReport(os.Stdout, report)
+			anchor := fmt.Sprintf("%s..%s", source, target)
+			scopeRepo := ""
+			if !allRepos {
+				scopeRepo = currentRepoName()
+			}
+			entries := buildExplainEntries(store, eng, source, target, since, scopeRepo)
+
+			if asJSON && format == "" {
+				format = "json"
 			}
 
-			var entries []engine.TimelineEntry
-			for _, rc := range rangeCommits {
-				entries = append(entries, engine.TimelineEntry{
-					Timestamp: rc.Timestamp,
-					Kind:      "commit",
-					Summary:   firstLine(rc.Message),
-					SHA:       rc.Hash,
-					FilePaths: rc.Files,
-				})
+			report := eng.BuildReport(context.Background(), anchor, "explain", entries)
+			if !noLLM {
+				_ = report.Enrich(context.Background(), provider)
 			}
-
-			events, _ := store.ListEvents(context.Background(), kleio.EventFilter{Limit: 200})
-			for _, ev := range events {
-				t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
-				entries = append(entries, engine.TimelineEntry{
-					Timestamp: t,
-					Kind:      "event",
-					Summary:   firstLine(ev.Content),
-					EventID:   ev.ID,
-				})
-			}
-
-			report := buildExplainReport(source, target, entries, eng)
-			if asJSON {
-				return json.NewEncoder(os.Stdout).Encode(report)
-			}
-			return renderExplainReport(os.Stdout, report)
+			return render.Render(os.Stdout, format, output, report, verbose)
 		},
 	}
 
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().StringVar(&since, "since", "", "Time window filter")
+	cmd.Flags().StringVar(&format, "format", "text", "Output format: text, md, html, pdf, json")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Write output to file")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Include raw timeline in output")
+	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment even if available")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (shorthand for --format json)")
 	cmd.Flags().BoolVar(&noInteractive, "no-interactive", false, "Suppress prompts")
+	cmd.Flags().BoolVar(&allRepos, "all-repos", false, "Include events from all indexed repositories (default: current repo only)")
 
 	return cmd
 }
 
-func buildExplainReport(source, target string, entries []engine.TimelineEntry, eng *engine.Engine) *ExplainReport {
-	subsystems := map[string]int{}
-	filesBySubsys := map[string][]string{}
-	var commitCount int
-	var decisions []string
-
-	for _, e := range entries {
-		if e.Kind == kleio.SignalTypeGitCommit {
-			commitCount++
-			for _, f := range e.FilePaths {
-				subsys := extractSubsystem(f)
-				subsystems[subsys]++
-				filesBySubsys[subsys] = appendUnique(filesBySubsys[subsys], f)
-			}
+func buildExplainEntries(store kleio.Store, eng *engine.Engine, source, target, since, repoName string) []engine.TimelineEntry {
+	rangeCommits, err := gitreader.CommitRange(".", source, target)
+	if err != nil {
+		sinceTime, _ := parseSince(since)
+		entries, tlErr := eng.TimelineScoped(context.Background(), "", repoName, sinceTime)
+		if tlErr != nil {
+			return nil
 		}
-		if e.Kind == kleio.SignalTypeDecision {
-			decisions = append(decisions, e.Summary)
-		}
+		return entries
 	}
 
-	var details []ExplainDetail
-	for subsys, files := range filesBySubsys {
-		details = append(details, ExplainDetail{
-			Subsystem: subsys,
-			Files:     files,
-			Summary:   fmt.Sprintf("%d file(s) changed", len(files)),
+	var entries []engine.TimelineEntry
+	for _, rc := range rangeCommits {
+		entries = append(entries, engine.TimelineEntry{
+			Timestamp: rc.Timestamp,
+			Kind:      kleio.SignalTypeGitCommit,
+			Summary:   firstLine(rc.Message),
+			SHA:       rc.Hash,
+			FilePaths: rc.Files,
 		})
 	}
-	sort.Slice(details, func(i, j int) bool {
-		return subsystems[details[i].Subsystem] > subsystems[details[j].Subsystem]
+
+	events, _ := store.ListEvents(context.Background(), kleio.EventFilter{
+		RepoName: repoName,
+		Limit:    200,
 	})
-
-	var summaryEvents []kleio.Event
-	for _, e := range entries {
-		summaryEvents = append(summaryEvents, kleio.Event{
-			SignalType: e.Kind,
-			Content:    e.Summary,
-			CreatedAt:  e.Timestamp.Format(time.RFC3339),
+	for _, ev := range events {
+		t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
+		entries = append(entries, engine.TimelineEntry{
+			Timestamp: t,
+			Kind:      ev.SignalType,
+			Summary:   firstLine(ev.Content),
+			EventID:   ev.ID,
 		})
 	}
-
-	summary := fmt.Sprintf("%d commit(s) across %d subsystem(s)", commitCount, len(subsystems))
-	if summaryText, err := eng.Summarize(context.Background(), summaryEvents); err == nil && summaryText != "No events to summarize." {
-		summary = summaryText
-	}
-
-	return &ExplainReport{
-		Source:     source,
-		Target:     target,
-		Commits:    commitCount,
-		Subsystems: subsystems,
-		Decisions:  decisions,
-		Summary:    summary,
-		Details:    details,
-	}
-}
-
-func renderExplainReport(w *os.File, report *ExplainReport) error {
-	fmt.Fprintf(w, "=== Explain: %s -> %s ===\n\n", report.Source, report.Target)
-	fmt.Fprintf(w, "Commits: %d\n", report.Commits)
-	fmt.Fprintf(w, "Subsystems: %d\n\n", len(report.Subsystems))
-
-	if len(report.Decisions) > 0 {
-		fmt.Fprintln(w, "Key Decisions:")
-		for _, d := range report.Decisions {
-			fmt.Fprintf(w, "  - %s\n", d)
-		}
-		fmt.Fprintln(w)
-	}
-
-	if len(report.Details) > 0 {
-		fmt.Fprintln(w, "Changes by Subsystem:")
-		for _, d := range report.Details {
-			fmt.Fprintf(w, "  [%s] %s\n", d.Subsystem, d.Summary)
-			for _, f := range d.Files {
-				fmt.Fprintf(w, "    - %s\n", f)
-			}
-		}
-		fmt.Fprintln(w)
-	}
-
-	fmt.Fprintf(w, "Summary: %s\n", report.Summary)
-	return nil
+	return entries
 }
 
 func extractSubsystem(path string) string {

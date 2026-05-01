@@ -161,6 +161,95 @@ func TestTimeline_UsesSignalTypeAsKind(t *testing.T) {
 	assert.False(t, kinds["event"], "should NOT have generic 'event' kind")
 }
 
+type stubExpander struct{ terms []string }
+
+func (s *stubExpander) Expand(_ context.Context, _ string) []string { return s.terms }
+
+func TestTimeline_AnchorExpanderWidensRecall(t *testing.T) {
+	eng, store := newTestEngine(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	require.NoError(t, store.IndexCommits(ctx, "/repo", []kleio.Commit{
+		{
+			SHA:         "c1",
+			RepoPath:    "/repo",
+			Message:     "feat: add opengraph image rendering",
+			CommittedAt: now.Add(-2 * time.Hour).Format(time.RFC3339),
+		},
+	}))
+
+	baseline, err := eng.Timeline(ctx, "og", time.Time{})
+	require.NoError(t, err)
+	if len(baseline) != 0 {
+		t.Fatalf("baseline expected 0 hits without expander (commit message is 'opengraph'), got %d", len(baseline))
+	}
+
+	eng.WithExpander(&stubExpander{terms: []string{"og", "opengraph"}})
+	expanded, err := eng.Timeline(ctx, "og", time.Time{})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(expanded), 1, "expander should surface commits matching aliased terms")
+}
+
+func TestTimelineScoped_RepoFilterRestrictsCommitsAndEvents(t *testing.T) {
+	eng, store := newTestEngine(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	require.NoError(t, store.IndexCommits(ctx, "/repo-a", []kleio.Commit{
+		{
+			SHA:         "a1",
+			RepoPath:    "/repo-a",
+			RepoName:    "repo-a",
+			Message:     "feat: add auth in repo-a",
+			CommittedAt: now.Add(-2 * time.Hour).Format(time.RFC3339),
+		},
+	}))
+	require.NoError(t, store.IndexCommits(ctx, "/repo-b", []kleio.Commit{
+		{
+			SHA:         "b1",
+			RepoPath:    "/repo-b",
+			RepoName:    "repo-b",
+			Message:     "feat: add auth in repo-b",
+			CommittedAt: now.Add(-1 * time.Hour).Format(time.RFC3339),
+		},
+	}))
+	require.NoError(t, store.CreateEvent(ctx, &kleio.Event{
+		ID:         "ev-a",
+		SignalType: kleio.SignalTypeDecision,
+		Content:    "auth decision in repo-a",
+		SourceType: kleio.SourceTypeCLI,
+		RepoName:   "repo-a",
+		CreatedAt:  now.Add(-90 * time.Minute).Format(time.RFC3339),
+	}))
+	require.NoError(t, store.CreateEvent(ctx, &kleio.Event{
+		ID:         "ev-b",
+		SignalType: kleio.SignalTypeDecision,
+		Content:    "auth decision in repo-b",
+		SourceType: kleio.SourceTypeCLI,
+		RepoName:   "repo-b",
+		CreatedAt:  now.Add(-80 * time.Minute).Format(time.RFC3339),
+	}))
+
+	all, err := eng.TimelineScoped(ctx, "auth", "", time.Time{})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(all), 4, "all-repos scope should include both repos")
+
+	scoped, err := eng.TimelineScoped(ctx, "auth", "repo-a", time.Time{})
+	require.NoError(t, err)
+	for _, e := range scoped {
+		if e.SHA != "" {
+			assert.NotEqual(t, "b1", e.SHA, "repo-a scope should not include repo-b commit")
+		}
+		if e.EventID != "" {
+			assert.NotEqual(t, "ev-b", e.EventID, "repo-a scope should not include repo-b event")
+		}
+	}
+	if len(scoped) == 0 {
+		t.Fatalf("expected at least one entry under repo-a scope")
+	}
+}
+
 func TestTimeline_DedupGitCommitEvents(t *testing.T) {
 	eng, store := newTestEngine(t)
 	ctx := context.Background()

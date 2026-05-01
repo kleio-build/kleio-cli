@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -11,26 +10,19 @@ import (
 	kleio "github.com/kleio-build/kleio-core"
 	"github.com/kleio-build/kleio-cli/internal/ai"
 	"github.com/kleio-build/kleio-cli/internal/engine"
+	"github.com/kleio-build/kleio-cli/internal/render"
 	"github.com/spf13/cobra"
 )
 
-// IncidentReport is the structured output of `kleio incident`.
-type IncidentReport struct {
-	Signal      string           `json:"signal"`
-	TimeWindow  string           `json:"time_window"`
-	Suspects    []SuspectChange  `json:"suspects"`
-	Summary     string           `json:"summary"`
-}
-
 // SuspectChange is a commit or event flagged as potentially related to the bug.
 type SuspectChange struct {
-	Kind       string  `json:"kind"`
-	SHA        string  `json:"sha,omitempty"`
-	EventID    string  `json:"event_id,omitempty"`
-	Summary    string  `json:"summary"`
-	Timestamp  string  `json:"timestamp"`
-	Score      float64 `json:"score"`
-	Reason     string  `json:"reason"`
+	Kind      string  `json:"kind"`
+	SHA       string  `json:"sha,omitempty"`
+	EventID   string  `json:"event_id,omitempty"`
+	Summary   string  `json:"summary"`
+	Timestamp string  `json:"timestamp"`
+	Score     float64 `json:"score"`
+	Reason    string  `json:"reason"`
 }
 
 // NewIncidentCmd creates the `kleio incident` command.
@@ -38,8 +30,13 @@ func NewIncidentCmd(getStore func() kleio.Store) *cobra.Command {
 	var (
 		files         []string
 		since         string
+		format        string
+		output        string
+		verbose       bool
+		noLLM         bool
 		asJSON        bool
 		noInteractive bool
+		allRepos      bool
 	)
 
 	cmd := &cobra.Command{
@@ -50,7 +47,8 @@ func NewIncidentCmd(getStore func() kleio.Store) *cobra.Command {
 Examples:
   kleio incident "checkout form returns 500"
   kleio incident --files src/payments,src/checkout
-  kleio incident --since 3d "login fails"`,
+  kleio incident --since 3d "login fails"
+  kleio incident --format pdf --output incident.pdf "500 errors"`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			signal := ""
@@ -59,62 +57,85 @@ Examples:
 			}
 			store := getStore()
 
-			provider, _ := ai.ResolveProvider(ai.LoadConfig())
-			eng := engine.New(store, provider)
+			provider := ai.AutoDetect(ai.LoadConfig())
+			if noLLM {
+				provider = ai.Noop{}
+			}
+			eng := engine.New(store, provider).WithExpander(loadAnchorExpander(provider))
 
 			sinceTime := parseSinceOrDefault(since, 3)
 			_ = noInteractive
 
-			report, err := buildIncidentReport(context.Background(), eng, store, signal, files, sinceTime)
+			scopeRepo := ""
+			if !allRepos {
+				scopeRepo = currentRepoName()
+			}
+
+			entries, err := buildIncidentEntries(context.Background(), eng, store, signal, files, sinceTime, scopeRepo)
 			if err != nil {
 				return fmt.Errorf("incident analysis failed: %w", err)
 			}
 
-			if len(report.Suspects) == 0 {
-				if asJSON {
-					json.NewEncoder(os.Stdout).Encode(report)
-					os.Exit(1)
-				}
+			if len(entries) == 0 {
 				if !noInteractive && isInteractive() {
-					report = runIncidentRefinement(os.Stdin, os.Stderr, eng, store, signal, files, sinceTime)
+					result := runIncidentRefinement(os.Stdin, os.Stderr, eng, store, signal, files, sinceTime)
+					if result != nil {
+						entries = incidentReportToEntries(result)
+					}
 				}
-				if report == nil || len(report.Suspects) == 0 {
+				if len(entries) == 0 {
 					fmt.Fprintln(os.Stderr, "No suspicious changes found in the given time window.")
 					os.Exit(1)
 				}
 			}
 
-			if asJSON {
-				return json.NewEncoder(os.Stdout).Encode(report)
+			if asJSON && format == "" {
+				format = "json"
 			}
 
-			return renderIncidentReport(os.Stdout, report)
+			anchor := signal
+			if anchor == "" {
+				anchor = "incident"
+			}
+
+			report := eng.BuildReport(context.Background(), anchor, "incident", entries)
+			if !noLLM {
+				_ = report.Enrich(context.Background(), provider)
+			}
+			return render.Render(os.Stdout, format, output, report, verbose)
 		},
 	}
 
 	cmd.Flags().StringSliceVar(&files, "files", nil, "File paths to investigate")
 	cmd.Flags().StringVar(&since, "since", "3d", "Time window (default 3 days)")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().StringVar(&format, "format", "text", "Output format: text, md, html, pdf, json")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Write output to file")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Include raw timeline in output")
+	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment even if available")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (shorthand for --format json)")
 	cmd.Flags().BoolVar(&noInteractive, "no-interactive", false, "Suppress prompts")
+	cmd.Flags().BoolVar(&allRepos, "all-repos", false, "Include commits and events from all indexed repositories (default: current repo only)")
 
 	return cmd
 }
 
-func buildIncidentReport(
+func buildIncidentEntries(
 	ctx context.Context,
 	eng *engine.Engine,
 	store kleio.Store,
 	signal string,
 	filePaths []string,
 	sinceTime time.Time,
-) (*IncidentReport, error) {
+	repoName string,
+) ([]engine.TimelineEntry, error) {
 	keywords := extractKeywords(signal)
 
-	var suspects []SuspectChange
+	var entries []engine.TimelineEntry
 
 	commits, err := store.QueryCommits(ctx, kleio.CommitFilter{
-		Since: sinceTime.Format(time.RFC3339),
-		Limit: 200,
+		Since:    sinceTime.Format(time.RFC3339),
+		RepoName: repoName,
+		Limit:    200,
 	})
 	if err != nil {
 		return nil, err
@@ -125,15 +146,15 @@ func buildIncidentReport(
 		if score < 0.1 {
 			continue
 		}
-
-		reason := classifyRisk(c, keywords, filePaths)
-		suspects = append(suspects, SuspectChange{
-			Kind:      "commit",
-			SHA:       c.SHA,
+		t, _ := time.Parse(time.RFC3339, c.CommittedAt)
+		if t.IsZero() {
+			t, _ = time.Parse("2006-01-02T15:04:05Z07:00", c.CommittedAt)
+		}
+		entries = append(entries, engine.TimelineEntry{
+			Timestamp: t,
+			Kind:      kleio.SignalTypeGitCommit,
 			Summary:   firstLine(c.Message),
-			Timestamp: c.CommittedAt,
-			Score:     score,
-			Reason:    reason,
+			SHA:       c.SHA,
 		})
 	}
 
@@ -141,37 +162,45 @@ func buildIncidentReport(
 	if err == nil {
 		for _, r := range results {
 			if r.Kind == "event" {
-				suspects = append(suspects, SuspectChange{
-					Kind:      "event",
-					EventID:   r.ID,
+				t, _ := time.Parse(time.RFC3339, r.CreatedAt)
+				entries = append(entries, engine.TimelineEntry{
+					Timestamp: t,
+					Kind:      kleio.SignalTypeWorkItem,
 					Summary:   firstLine(r.Content),
-					Timestamp: r.CreatedAt,
-					Score:     r.EngineScore * 0.8,
-					Reason:    "keyword_match",
+					EventID:   r.ID,
 				})
 			}
 		}
 	}
 
-	sortSuspects(suspects)
-	if len(suspects) > 20 {
-		suspects = suspects[:20]
+	return entries, nil
+}
+
+// IncidentReport is kept for backward compat with the interactive refinement loop.
+type IncidentReport struct {
+	Signal     string          `json:"signal"`
+	TimeWindow string          `json:"time_window"`
+	Suspects   []SuspectChange `json:"suspects"`
+	Summary    string          `json:"summary"`
+}
+
+func incidentReportToEntries(ir *IncidentReport) []engine.TimelineEntry {
+	var entries []engine.TimelineEntry
+	for _, s := range ir.Suspects {
+		t, _ := time.Parse(time.RFC3339, s.Timestamp)
+		entries = append(entries, engine.TimelineEntry{
+			Timestamp: t,
+			Kind:      s.Kind,
+			Summary:   s.Summary,
+			SHA:       s.SHA,
+			EventID:   s.EventID,
+		})
 	}
-
-	summary := fmt.Sprintf("Found %d suspicious change(s) since %s",
-		len(suspects), sinceTime.Format("2006-01-02"))
-
-	return &IncidentReport{
-		Signal:     signal,
-		TimeWindow: sinceTime.Format(time.RFC3339),
-		Suspects:   suspects,
-		Summary:    summary,
-	}, nil
+	return entries
 }
 
 func scoreCommitForIncident(c kleio.Commit, keywords, filePaths []string, sinceTime time.Time) float64 {
 	score := 0.0
-
 	score += 0.35 * engine.ExportRecencyScore(c.CommittedAt)
 
 	msg := strings.ToLower(c.Message)
@@ -180,17 +209,14 @@ func scoreCommitForIncident(c kleio.Commit, keywords, filePaths []string, sinceT
 			score += 0.15
 		}
 	}
-
 	if c.FilesChanged > 50 {
 		score += 0.10
 	}
-
 	for _, fp := range filePaths {
 		if strings.Contains(msg, fp) {
 			score += 0.20
 		}
 	}
-
 	errorKeywords := []string{"fix", "bug", "error", "crash", "panic", "revert", "hotfix"}
 	for _, ek := range errorKeywords {
 		if strings.Contains(msg, ek) {
@@ -198,7 +224,6 @@ func scoreCommitForIncident(c kleio.Commit, keywords, filePaths []string, sinceT
 			break
 		}
 	}
-
 	if score > 1.0 {
 		score = 1.0
 	}
@@ -207,7 +232,6 @@ func scoreCommitForIncident(c kleio.Commit, keywords, filePaths []string, sinceT
 
 func classifyRisk(c kleio.Commit, keywords, filePaths []string) string {
 	msg := strings.ToLower(c.Message)
-
 	if strings.Contains(msg, "revert") {
 		return "revert"
 	}
@@ -263,26 +287,4 @@ func sortSuspects(suspects []SuspectChange) {
 			}
 		}
 	}
-}
-
-func renderIncidentReport(w *os.File, report *IncidentReport) error {
-	fmt.Fprintf(w, "=== Incident Analysis ===\n\n")
-	if report.Signal != "" {
-		fmt.Fprintf(w, "Signal: %q\n", report.Signal)
-	}
-	fmt.Fprintf(w, "Window: since %s\n", report.TimeWindow)
-	fmt.Fprintf(w, "Suspects: %d\n\n", len(report.Suspects))
-
-	for i, s := range report.Suspects {
-		icon := kindIcon(s.Kind)
-		ts, _ := time.Parse(time.RFC3339, s.Timestamp)
-		fmt.Fprintf(w, "  %d. %s %.0f%% [%s] %s %s\n",
-			i+1, icon, s.Score*100, s.Reason, ts.Format("2006-01-02 15:04"), s.Summary)
-		if s.SHA != "" {
-			fmt.Fprintf(w, "     sha: %s\n", s.SHA)
-		}
-	}
-
-	fmt.Fprintf(w, "\n%s\n", report.Summary)
-	return nil
 }

@@ -1,0 +1,84 @@
+{
+  "anchor": "auth",
+  "command": "trace",
+  "generated_at": "2026-04-30T12:00:00Z",
+  "subject": "Trace report fixture covering long subjects → wrap, smart “quotes”, em—dashes, en–dashes, ellipsis… and • bullets.",
+  "decisions": [
+    {
+      "content": "Adopt JWT instead of session cookies for the public API surface",
+      "rationale": "Stateless verification simplifies horizontal scaling and removes Redis dependency",
+      "at": "2026-04-30T10:00:00Z"
+    },
+    {
+      "content": "Defer rate-limit middleware until after launch — measured baseline first",
+      "at": "2026-04-29T16:00:00Z"
+    }
+  ],
+  "open_threads": [
+    {
+      "content": "very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap ",
+      "occurrences": 4,
+      "first_seen": "",
+      "last_seen": ""
+    },
+    {
+      "content": "Audit log retention window not yet defined",
+      "occurrences": 2,
+      "first_seen": "",
+      "last_seen": ""
+    },
+    {
+      "content": "Defer caching layer; revisit once query latency is profiled",
+      "occurrences": 1,
+      "first_seen": "",
+      "last_seen": "",
+      "deferred": true
+    }
+  ],
+  "code_changes": [
+    {
+      "sha": "abc1234567",
+      "date": "2026-04-30",
+      "subject": "very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap ",
+      "files": [
+        "internal/auth.go"
+      ]
+    },
+    {
+      "sha": "deadbeef00",
+      "date": "2026-04-29",
+      "subject": "feat: introduce JWT verifier",
+      "files": [
+        "internal/auth.go"
+      ]
+    }
+  ],
+  "evidence_quality": {
+    "source_counts": {
+      "cursor_transcript": 7,
+      "local_git": 12,
+      "mcp": 4
+    },
+    "history_fidelity": "high",
+    "notes": [
+      "3 work item(s) appear duplicated across re-imported transcripts."
+    ]
+  },
+  "next_steps": [
+    "kleio explain abc1234 HEAD",
+    "kleio backlog list --search \"auth\"",
+    "kleio incident \"jwt verifier\""
+  ],
+  "raw_timeline": [
+    {
+      "Timestamp": "2026-04-30T10:00:00Z",
+      "Kind": "decision",
+      "Summary": "Adopt JWT",
+      "SHA": "",
+      "EventID": "",
+      "FilePaths": null,
+      "Identifiers": null
+    }
+  ],
+  "enriched": false
+}

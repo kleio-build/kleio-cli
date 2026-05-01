@@ -60,9 +60,19 @@ func runIncidentRefinement(in io.Reader, out io.Writer, eng *engine.Engine, stor
 			break
 		}
 
-		report, err := buildIncidentReport(context.Background(), eng, store, input, files, sinceTime)
-		if err == nil && len(report.Suspects) > 0 {
-			fmt.Fprintf(out, "Found %d suspect(s) for %q.\n\n", len(report.Suspects), input)
+		entries, err := buildIncidentEntries(context.Background(), eng, store, input, files, sinceTime, "")
+		if err == nil && len(entries) > 0 {
+			fmt.Fprintf(out, "Found %d suspect(s) for %q.\n\n", len(entries), input)
+			report := &IncidentReport{Signal: input}
+			for _, e := range entries {
+				report.Suspects = append(report.Suspects, SuspectChange{
+					Kind:      e.Kind,
+					SHA:       e.SHA,
+					EventID:   e.EventID,
+					Summary:   e.Summary,
+					Timestamp: e.Timestamp.Format(time.RFC3339),
+				})
+			}
 			return report
 		}
 		signal = input

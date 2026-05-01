@@ -83,6 +83,38 @@ func (s *Store) GetEvent(ctx context.Context, id string) (*kleio.Event, error) {
 	return &e, nil
 }
 
+// DeleteEventsBySourceType removes every event whose source_type matches
+// (and the matching events_fts rows) and returns the number of events
+// deleted. Used by `kleio import cursor --reimport` to wipe stale
+// transcript signals before re-running ingestion under updated scope.
+func (s *Store) DeleteEventsBySourceType(ctx context.Context, sourceType string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// FTS rows must be removed first (no foreign key, and we want orphan-free
+	// state if the events delete fails).
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM events_fts
+		 WHERE event_id IN (SELECT id FROM events WHERE source_type = ?)`,
+		sourceType); err != nil {
+		return 0, fmt.Errorf("wipe events_fts: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM events WHERE source_type = ?`, sourceType)
+	if err != nil {
+		return 0, fmt.Errorf("wipe events: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 func (s *Store) ListEvents(ctx context.Context, f kleio.EventFilter) ([]kleio.Event, error) {
 	var where []string
 	var args []interface{}
@@ -375,6 +407,10 @@ func (s *Store) QueryCommits(ctx context.Context, f kleio.CommitFilter) ([]kleio
 	if f.RepoPath != "" {
 		where = append(where, "c.repo_path = ?")
 		args = append(args, f.RepoPath)
+	}
+	if f.RepoName != "" {
+		where = append(where, "c.repo_name = ?")
+		args = append(args, f.RepoName)
 	}
 	if f.Branch != "" {
 		where = append(where, "c.branch = ?")
