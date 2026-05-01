@@ -148,6 +148,51 @@ func (s *Store) CreateEntityMention(ctx context.Context, m *kleio.EntityMention)
 	return err
 }
 
+// LearnCoOccurrenceAliases finds entity pairs that co-occur in >= threshold
+// evidence IDs and creates alias links between them.
+func (s *Store) LearnCoOccurrenceAliases(ctx context.Context, threshold int) (int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT e1.id, e1.label, e2.id, e2.label, COUNT(DISTINCT m1.evidence_id) AS shared
+		 FROM entity_mentions m1
+		 JOIN entity_mentions m2 ON m1.evidence_id = m2.evidence_id AND m1.entity_id < m2.entity_id
+		 JOIN entities e1 ON e1.id = m1.entity_id
+		 JOIN entities e2 ON e2.id = m2.entity_id
+		 WHERE e1.kind = e2.kind
+		 GROUP BY m1.entity_id, m2.entity_id
+		 HAVING shared >= ?`,
+		threshold,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	created := 0
+	now := time.Now().UTC().Format(time.RFC3339)
+	for rows.Next() {
+		var e1ID, e1Label, e2ID, e2Label string
+		var shared int
+		if err := rows.Scan(&e1ID, &e1Label, &e2ID, &e2Label, &shared); err != nil {
+			continue
+		}
+		conf := min(0.9, 0.4+0.1*float64(shared))
+		// Create bidirectional aliases.
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO entity_aliases (entity_id, alias, source, confidence, created_at)
+			 VALUES (?, ?, 'co_occurrence', ?, ?)`,
+			e1ID, e2Label, conf, now); err == nil {
+			created++
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO entity_aliases (entity_id, alias, source, confidence, created_at)
+			 VALUES (?, ?, 'co_occurrence', ?, ?)`,
+			e2ID, e1Label, conf, now); err == nil {
+			created++
+		}
+	}
+	return created, rows.Err()
+}
+
 func (s *Store) FindEntitiesByEvidence(ctx context.Context, evidenceID string) ([]kleio.Entity, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT e.id, e.kind, e.label, e.normalized_label, e.repo_name,

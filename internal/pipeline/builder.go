@@ -16,6 +16,7 @@
 package pipeline
 
 import (
+	"context"
 	"time"
 
 	"github.com/kleio-build/kleio-cli/internal/ai"
@@ -24,6 +25,7 @@ import (
 	"github.com/kleio-build/kleio-cli/internal/correlate/idreference"
 	"github.com/kleio-build/kleio-cli/internal/correlate/search"
 	"github.com/kleio-build/kleio-cli/internal/correlate/timewindow"
+	"github.com/kleio-build/kleio-cli/internal/entity"
 	"github.com/kleio-build/kleio-cli/internal/ingest/discovery"
 	"github.com/kleio-build/kleio-cli/internal/synthesize/llm"
 	"github.com/kleio-build/kleio-cli/internal/synthesize/orphan"
@@ -84,11 +86,24 @@ func Build(cfg Config) *kleio.Pipeline {
 		synthesizers = filterByName(synthesizers, cfg.EnabledSynthesizers, synthesizerName)
 	}
 
+	norm := entity.NewNormalizer(cfg.Store)
+	hooks := []kleio.PostIngestFunc{
+		func(ctx context.Context, signals []kleio.RawSignal) error {
+			_, err := norm.PersistSignalEntities(ctx, signals)
+			if err != nil {
+				return err
+			}
+			_, _ = norm.LearnCoOccurrenceAliases(ctx)
+			return nil
+		},
+	}
+
 	return &kleio.Pipeline{
-		Ingesters:    ingesters,
-		Correlators:  correlators,
-		Synthesizers: synthesizers,
-		Store:        cfg.Store,
+		Ingesters:       ingesters,
+		Correlators:     correlators,
+		Synthesizers:    synthesizers,
+		Store:           cfg.Store,
+		PostIngestHooks: hooks,
 	}
 }
 
