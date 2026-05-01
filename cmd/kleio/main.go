@@ -138,7 +138,7 @@ func main() {
 	rootCmd.AddCommand(commands.NewIncidentCmd(getStore))
 	rootCmd.AddCommand(commands.NewSyncCmd(getClient))
 	rootCmd.AddCommand(commands.NewIndexCmd())
-	rootCmd.AddCommand(newDevCmd())
+	rootCmd.AddCommand(newDevCmd(getStore))
 
 	mcpCmd := &cobra.Command{
 		Use:          "mcp",

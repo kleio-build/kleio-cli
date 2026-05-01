@@ -12,9 +12,12 @@ Trace report fixture covering long subjects → wrap, smart “quotes”, em—d
 
 ## Open Threads
 
-- very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap  (×4)
-- Audit log retention window not yet defined (×2)
-- Defer caching layer; revisit once query latency is profiled (×1) _(deferred)_
+- very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap very-long-commit-subject-that-must-wrap  (x4)
+- Audit log retention window not yet defined (x2)
+
+**Deferred:**
+
+- ~~Defer caching layer; revisit once query latency is profiled~~ (x1) _(deferred)_
 
 ## Code Changes
 
@@ -26,9 +29,9 @@ Trace report fixture covering long subjects → wrap, smart “quotes”, em—d
 ## Evidence Quality
 
 - **Fidelity**: high
-- cursor_transcript: 7
 - mcp: 4
 - local_git: 12
+- cursor_transcript: 7
 - _3 work item(s) appear duplicated across re-imported transcripts._
 
 ## Next Steps

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -61,11 +62,18 @@ Examples:
 				format = "json"
 			}
 
-			report := eng.BuildReport(context.Background(), anchor, "explain", entries)
+			stats := engine.ComputeCorpusStats(context.Background(), store, scopeRepo)
+			params := engine.DeriveParams(stats)
+			report := eng.BuildReportWithOptions(context.Background(), anchor, "explain", entries, engine.ReportOptions{Stats: &stats})
 			if !noLLM {
 				_ = report.Enrich(context.Background(), provider)
 			}
-			return render.Render(os.Stdout, format, output, report, verbose)
+			renderOpts := render.Options{
+				Verbose:   verbose,
+				RenderCap: params.RenderCap,
+				DeferCap:  params.RenderDeferCap,
+			}
+			return render.RenderWithOptions(os.Stdout, format, output, report, renderOpts)
 		},
 	}
 
@@ -82,17 +90,26 @@ Examples:
 }
 
 func buildExplainEntries(store kleio.Store, eng *engine.Engine, source, target, since, repoName string) []engine.TimelineEntry {
+	ctx := context.Background()
+
 	rangeCommits, err := gitreader.CommitRange(".", source, target)
 	if err != nil {
 		sinceTime, _ := parseSince(since)
-		entries, tlErr := eng.TimelineScoped(context.Background(), "", repoName, sinceTime)
+		entries, tlErr := eng.TimelineScoped(ctx, "", repoName, sinceTime)
 		if tlErr != nil {
 			return nil
 		}
 		return entries
 	}
 
+	stats := engine.ComputeCorpusStats(ctx, store, repoName)
+	params := engine.DeriveParams(stats)
+
 	var entries []engine.TimelineEntry
+	var earliest, latest time.Time
+	var allFiles []string
+	var keywords []string
+
 	for _, rc := range rangeCommits {
 		entries = append(entries, engine.TimelineEntry{
 			Timestamp: rc.Timestamp,
@@ -101,22 +118,136 @@ func buildExplainEntries(store kleio.Store, eng *engine.Engine, source, target, 
 			SHA:       rc.Hash,
 			FilePaths: rc.Files,
 		})
+		if earliest.IsZero() || rc.Timestamp.Before(earliest) {
+			earliest = rc.Timestamp
+		}
+		if latest.IsZero() || rc.Timestamp.After(latest) {
+			latest = rc.Timestamp
+		}
+		allFiles = append(allFiles, rc.Files...)
+		for _, word := range strings.Fields(firstLine(rc.Message)) {
+			if len(word) > 3 {
+				keywords = appendUnique(keywords, strings.ToLower(word))
+			}
+		}
 	}
 
-	events, _ := store.ListEvents(context.Background(), kleio.EventFilter{
+	filter := kleio.EventFilter{
 		RepoName: repoName,
-		Limit:    200,
-	})
+		Limit:    params.TopK * 2,
+	}
+	if !earliest.IsZero() {
+		filter.CreatedAfter = earliest.Add(-24 * time.Hour).Format(time.RFC3339)
+	}
+	if !latest.IsZero() {
+		filter.CreatedBefore = latest.Add(24 * time.Hour).Format(time.RFC3339)
+	}
+
+	events, _ := store.ListEvents(ctx, filter)
+
+	keywordQuery := strings.Join(keywords, " ")
+	type scoredEvent struct {
+		entry engine.TimelineEntry
+		score float64
+	}
+	var scored []scoredEvent
+	seenIDs := make(map[string]bool)
+
 	for _, ev := range events {
 		t, _ := time.Parse(time.RFC3339, ev.CreatedAt)
-		entries = append(entries, engine.TimelineEntry{
-			Timestamp: t,
-			Kind:      ev.SignalType,
-			Summary:   firstLine(ev.Content),
-			EventID:   ev.ID,
+		score := engine.RecencyScoreWithHalfLife(ev.CreatedAt, params.RecencyHalfLife)*0.25 +
+			keywordScore(ev.Content, keywordQuery)*0.35 +
+			fileOverlapScore(ev.FilePath, allFiles)*0.25 +
+			idRefScore(ev.Content, rangeCommits)*0.15
+
+		if score < params.ScoreFloor {
+			continue
+		}
+
+		seenIDs[ev.ID] = true
+		scored = append(scored, scoredEvent{
+			entry: engine.TimelineEntry{
+				Timestamp: t,
+				Kind:      ev.SignalType,
+				Summary:   firstLine(ev.Content),
+				EventID:   ev.ID,
+			},
+			score: score,
 		})
 	}
+
+	if len(keywords) > 0 {
+		searchResults, err := eng.Search(ctx, keywordQuery, params.TopK)
+		if err == nil {
+			for _, sr := range searchResults {
+				if sr.Kind != "event" || seenIDs[sr.ID] {
+					continue
+				}
+				seenIDs[sr.ID] = true
+				t, _ := time.Parse(time.RFC3339, sr.CreatedAt)
+				scored = append(scored, scoredEvent{
+					entry: engine.TimelineEntry{
+						Timestamp: t,
+						Kind:      sr.SignalType,
+						Summary:   firstLine(sr.Content),
+						EventID:   sr.ID,
+					},
+					score: sr.EngineScore,
+				})
+			}
+		}
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	topK := params.TopK
+	if topK > len(scored) {
+		topK = len(scored)
+	}
+	for i := 0; i < topK; i++ {
+		entries = append(entries, scored[i].entry)
+	}
+
 	return entries
+}
+
+func keywordScore(text, query string) float64 {
+	lower := strings.ToLower(text)
+	words := strings.Fields(strings.ToLower(query))
+	if len(words) == 0 {
+		return 0
+	}
+	hits := 0
+	for _, w := range words {
+		if strings.Contains(lower, w) {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(words))
+}
+
+func fileOverlapScore(evPath string, commitFiles []string) float64 {
+	if evPath == "" || len(commitFiles) == 0 {
+		return 0
+	}
+	lower := strings.ToLower(evPath)
+	for _, f := range commitFiles {
+		if strings.Contains(lower, strings.ToLower(f)) || strings.Contains(strings.ToLower(f), lower) {
+			return 1.0
+		}
+	}
+	return 0
+}
+
+func idRefScore(content string, commits []gitreader.Commit) float64 {
+	for _, c := range commits {
+		if len(c.Hash) >= 7 && strings.Contains(content, c.Hash[:7]) {
+			return 1.0
+		}
+	}
+	return 0
 }
 
 func extractSubsystem(path string) string {

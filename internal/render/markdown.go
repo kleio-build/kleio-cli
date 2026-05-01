@@ -8,7 +8,7 @@ import (
 )
 
 // RenderMarkdown writes a markdown-formatted report to w.
-func RenderMarkdown(w io.Writer, r engine.Report, verbose bool) error {
+func RenderMarkdown(w io.Writer, r engine.Report, opts Options) error {
 	fmt.Fprintf(w, "# %s Report: %s\n\n", capitalize(r.Command), r.Anchor)
 
 	if r.Enriched {
@@ -39,16 +39,10 @@ func RenderMarkdown(w io.Writer, r engine.Report, verbose bool) error {
 			}
 			heading := "Open Threads"
 			if r.Command == "explain" {
-				heading = "Review Risks"
+				heading = "Related Work"
 			}
 			fmt.Fprintf(w, "## %s\n\n", heading)
-			for _, t := range r.OpenThreads {
-				mark := ""
-				if t.Deferred {
-					mark = " _(deferred)_"
-				}
-				fmt.Fprintf(w, "- %s (×%d)%s\n", t.Content, t.Occurrences, mark)
-			}
+			renderMarkdownThreads(w, r, opts)
 			fmt.Fprintln(w)
 
 		case "code_changes":
@@ -88,7 +82,7 @@ func RenderMarkdown(w io.Writer, r engine.Report, verbose bool) error {
 		fmt.Fprintln(w)
 	}
 
-	if verbose && len(r.RawTimeline) > 0 {
+	if opts.Verbose && len(r.RawTimeline) > 0 {
 		fmt.Fprintf(w, "## Raw Timeline\n\n")
 		fmt.Fprintln(w, "```")
 		for _, e := range r.RawTimeline {
@@ -100,6 +94,60 @@ func RenderMarkdown(w io.Writer, r engine.Report, verbose bool) error {
 	}
 
 	return nil
+}
+
+func renderMarkdownThreads(w io.Writer, r engine.Report, opts Options) {
+	useGroups := len(r.ThreadGroups) > 1
+
+	if useGroups {
+		for _, g := range r.ThreadGroups {
+			if g.PlanName != "" {
+				fmt.Fprintf(w, "### %s\n\n", g.PlanName)
+			}
+			renderMarkdownThreadList(w, g.Threads, opts)
+		}
+	} else {
+		renderMarkdownThreadList(w, r.OpenThreads, opts)
+	}
+}
+
+func renderMarkdownThreadList(w io.Writer, threads []engine.ReportThread, opts Options) {
+	active, deferred := splitActiveDeferred(threads)
+
+	cap := opts.RenderCap
+	if opts.Verbose {
+		cap = len(active)
+	}
+	shown := 0
+	for i, t := range active {
+		if i >= cap {
+			break
+		}
+		fmt.Fprintf(w, "- %s (x%d)\n", t.Content, t.Occurrences)
+		shown++
+	}
+	if remaining := len(active) - shown; remaining > 0 {
+		fmt.Fprintf(w, "\n_... and %d more (use --verbose to see all)_\n\n", remaining)
+	}
+
+	if len(deferred) > 0 {
+		fmt.Fprintf(w, "\n**Deferred:**\n\n")
+		deferCap := opts.DeferCap
+		if opts.Verbose {
+			deferCap = len(deferred)
+		}
+		dShown := 0
+		for i, t := range deferred {
+			if i >= deferCap {
+				break
+			}
+			fmt.Fprintf(w, "- ~~%s~~ (x%d) _(deferred)_\n", t.Content, t.Occurrences)
+			dShown++
+		}
+		if remaining := len(deferred) - dShown; remaining > 0 {
+			fmt.Fprintf(w, "\n_... and %d more deferred_\n", remaining)
+		}
+	}
 }
 
 func capitalize(s string) string {

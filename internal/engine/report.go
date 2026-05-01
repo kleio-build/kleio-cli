@@ -18,17 +18,27 @@ import (
 // Report is the structured output produced by all three trigger commands
 // (trace, explain, incident). Renderers vary section emphasis per command.
 type Report struct {
-	Anchor          string           `json:"anchor"`
-	Command         string           `json:"command"`
-	GeneratedAt     time.Time        `json:"generated_at"`
-	Subject         string           `json:"subject"`
-	Decisions       []ReportDecision `json:"decisions,omitempty"`
-	OpenThreads     []ReportThread   `json:"open_threads,omitempty"`
-	CodeChanges     []ReportChange   `json:"code_changes,omitempty"`
-	EvidenceQuality EvidenceQuality  `json:"evidence_quality"`
-	NextSteps       []string         `json:"next_steps,omitempty"`
-	RawTimeline     []TimelineEntry  `json:"raw_timeline,omitempty"`
-	Enriched        bool             `json:"enriched"`
+	Anchor          string              `json:"anchor"`
+	Command         string              `json:"command"`
+	GeneratedAt     time.Time           `json:"generated_at"`
+	Subject         string              `json:"subject"`
+	Decisions       []ReportDecision    `json:"decisions,omitempty"`
+	OpenThreads     []ReportThread      `json:"open_threads,omitempty"`
+	ThreadGroups    []ReportThreadGroup `json:"thread_groups,omitempty"`
+	CodeChanges     []ReportChange      `json:"code_changes,omitempty"`
+	EvidenceQuality EvidenceQuality     `json:"evidence_quality"`
+	NextSteps       []string            `json:"next_steps,omitempty"`
+	RawTimeline     []TimelineEntry     `json:"raw_timeline,omitempty"`
+	Enriched        bool                `json:"enriched"`
+}
+
+// ReportThreadGroup groups related work items under a plan cluster.
+// When no plan data exists, all threads go into a single group with
+// empty PlanName/ClusterID.
+type ReportThreadGroup struct {
+	PlanName  string         `json:"plan_name,omitempty"`
+	ClusterID string         `json:"cluster_id,omitempty"`
+	Threads   []ReportThread `json:"threads"`
 }
 
 type ReportDecision struct {
@@ -44,6 +54,7 @@ type ReportThread struct {
 	FirstSeen   string `json:"first_seen"`
 	LastSeen    string `json:"last_seen"`
 	Deferred    bool   `json:"deferred,omitempty"`
+	ClusterID   string `json:"cluster_id,omitempty"`
 }
 
 type ReportChange struct {
@@ -59,10 +70,21 @@ type EvidenceQuality struct {
 	Notes           []string       `json:"notes,omitempty"`
 }
 
+// ReportOptions configures adaptive report building.
+type ReportOptions struct {
+	Stats *CorpusStats
+}
+
 // BuildReport constructs a Report from timeline entries using purely
 // heuristic logic (no LLM). Call Report.Enrich afterwards if a provider
 // is available.
 func (e *Engine) BuildReport(ctx context.Context, anchor, command string, entries []TimelineEntry) Report {
+	return e.BuildReportWithOptions(ctx, anchor, command, entries, ReportOptions{})
+}
+
+// BuildReportWithOptions constructs a Report with adaptive behaviour
+// driven by corpus statistics.
+func (e *Engine) BuildReportWithOptions(ctx context.Context, anchor, command string, entries []TimelineEntry, opts ReportOptions) Report {
 	r := Report{
 		Anchor:      anchor,
 		Command:     command,
@@ -77,6 +99,7 @@ func (e *Engine) BuildReport(ctx context.Context, anchor, command string, entrie
 	threadFirst := map[string]time.Time{}
 	threadLast := map[string]time.Time{}
 	threadContent := map[string]string{}
+	threadCluster := map[string]string{}
 
 	for _, entry := range entries {
 		typeCounts[entry.Kind]++
@@ -116,6 +139,11 @@ func (e *Engine) BuildReport(ctx context.Context, anchor, command string, entrie
 			if existing, ok := threadContent[h]; !ok || len(entry.Summary) > len(existing) {
 				threadContent[h] = entry.Summary
 			}
+			if entry.EventID != "" {
+				if cid := extractClusterID(ctx, e.store, entry.EventID); cid != "" {
+					threadCluster[h] = cid
+				}
+			}
 
 		case kleio.SignalTypeGitCommit:
 			if seenSHAs[entry.SHA] {
@@ -144,17 +172,84 @@ func (e *Engine) BuildReport(ctx context.Context, anchor, command string, entrie
 			FirstSeen:   threadFirst[h].Format(time.RFC3339),
 			LastSeen:    threadLast[h].Format(time.RFC3339),
 			Deferred:    deferred,
+			ClusterID:   threadCluster[h],
 		})
 	}
 	sort.Slice(r.OpenThreads, func(i, j int) bool {
 		return r.OpenThreads[i].Occurrences > r.OpenThreads[j].Occurrences
 	})
 
+	isSignalRich := false
+	if opts.Stats != nil {
+		isSignalRich = opts.Stats.IsSignalRich
+	}
+	r.ThreadGroups = groupThreadsByCluster(r.OpenThreads, isSignalRich)
+
 	r.Subject = buildSubject(anchor, entries, typeCounts, dateActivity)
 	r.EvidenceQuality = buildEvidenceQuality(ctx, e.store, entries, r.OpenThreads)
 	r.NextSteps = buildNextSteps(anchor, r.CodeChanges)
 
 	return r
+}
+
+func extractClusterID(ctx context.Context, store kleio.Store, eventID string) string {
+	ev, err := store.GetEvent(ctx, eventID)
+	if err != nil || ev.StructuredData == "" {
+		return ""
+	}
+	var sd map[string]interface{}
+	if json.Unmarshal([]byte(ev.StructuredData), &sd) != nil {
+		return ""
+	}
+	if cid, ok := sd[kleio.StructuredKeyClusterAnchorID].(string); ok {
+		return cid
+	}
+	return ""
+}
+
+func groupThreadsByCluster(threads []ReportThread, signalRich bool) []ReportThreadGroup {
+	if !signalRich {
+		return []ReportThreadGroup{{Threads: threads}}
+	}
+
+	grouped := map[string][]ReportThread{}
+	var order []string
+	for _, t := range threads {
+		key := t.ClusterID
+		if key == "" {
+			key = "__orphan__"
+		}
+		if _, exists := grouped[key]; !exists {
+			order = append(order, key)
+		}
+		grouped[key] = append(grouped[key], t)
+	}
+
+	hasMultipleGroups := false
+	for _, key := range order {
+		if key != "__orphan__" {
+			hasMultipleGroups = true
+			break
+		}
+	}
+	if !hasMultipleGroups {
+		return []ReportThreadGroup{{Threads: threads}}
+	}
+
+	var groups []ReportThreadGroup
+	for _, key := range order {
+		g := ReportThreadGroup{
+			Threads: grouped[key],
+		}
+		if key != "__orphan__" {
+			g.ClusterID = key
+			g.PlanName = "Plan: " + key
+		} else {
+			g.PlanName = "Other signals"
+		}
+		groups = append(groups, g)
+	}
+	return groups
 }
 
 // Enrich uses an LLM provider to improve the heuristic report.

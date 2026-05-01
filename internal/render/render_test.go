@@ -44,7 +44,7 @@ func sampleReport() engine.Report {
 
 func TestRenderText(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderText(&buf, sampleReport(), false)
+	err := RenderText(&buf, sampleReport(), DefaultOptions())
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -65,7 +65,7 @@ func TestRenderText(t *testing.T) {
 
 func TestRenderText_Verbose(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderText(&buf, sampleReport(), true)
+	err := RenderText(&buf, sampleReport(), Options{Verbose: true, RenderCap: 10, DeferCap: 5})
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "Raw Timeline")
@@ -74,7 +74,7 @@ func TestRenderText_Verbose(t *testing.T) {
 
 func TestRenderMarkdown(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderMarkdown(&buf, sampleReport(), false)
+	err := RenderMarkdown(&buf, sampleReport(), DefaultOptions())
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -90,7 +90,7 @@ func TestRenderMarkdown(t *testing.T) {
 
 func TestRenderHTML(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderHTML(&buf, sampleReport(), false)
+	err := RenderHTML(&buf, sampleReport(), DefaultOptions())
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -116,7 +116,7 @@ func TestRenderJSON(t *testing.T) {
 
 func TestRenderPDF(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderPDF(&buf, sampleReport(), false)
+	err := RenderPDF(&buf, sampleReport(), DefaultOptions())
 	require.NoError(t, err)
 
 	assert.True(t, buf.Len() > 100, "PDF should have content")
@@ -135,7 +135,7 @@ func TestRenderPDF_NoUTF8BulletMojibake(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, RenderPDF(&buf, r, false))
+	require.NoError(t, RenderPDF(&buf, r, DefaultOptions()))
 
 	utf8Bullet := []byte{0xE2, 0x80, 0xA2}
 	assert.False(t, bytes.Contains(buf.Bytes(), utf8Bullet),
@@ -170,7 +170,7 @@ func TestRenderPDF_LongSubjectsWrap(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	require.NoError(t, RenderPDF(&buf, r, false))
+	require.NoError(t, RenderPDF(&buf, r, DefaultOptions()))
 	assert.True(t, buf.Len() > 500, "PDF with long content should produce real output")
 	assert.True(t, strings.HasPrefix(buf.String(), "%PDF-1."))
 }

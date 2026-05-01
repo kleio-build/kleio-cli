@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/dslipak/pdf"
+	kleio "github.com/kleio-build/kleio-core"
+	"github.com/kleio-build/kleio-cli/internal/commands"
 	"github.com/kleio-build/kleio-cli/internal/engine"
 	"github.com/kleio-build/kleio-cli/internal/render"
 	"github.com/spf13/cobra"
@@ -18,7 +20,7 @@ import (
 // newDevCmd returns the hidden `kleio dev` command tree. Sub-commands here
 // are intended for contributor workflows (E2E smoke tests, golden file
 // regeneration, etc.) and are not surfaced in the standard help output.
-func newDevCmd() *cobra.Command {
+func newDevCmd(getStore func() kleio.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "dev",
 		Hidden: true,
@@ -28,6 +30,7 @@ func newDevCmd() *cobra.Command {
 	cmd.AddCommand(newDevIngestCmd())
 	cmd.AddCommand(newDevCorrelateCmd())
 	cmd.AddCommand(newDevSynthesizeCmd())
+	cmd.AddCommand(commands.NewCorpusStatsCmd(getStore))
 	return cmd
 }
 
@@ -176,7 +179,7 @@ func runSmokeRender(r engine.Report, outDir string) []string {
 		defects = append(defects, fmt.Sprintf("create %s: %v", pdfPath, err))
 		return defects
 	}
-	if err := render.RenderPDF(pf, r, false); err != nil {
+	if err := render.RenderPDF(pf, r, render.DefaultOptions()); err != nil {
 		pf.Close()
 		defects = append(defects, fmt.Sprintf("render pdf: %v", err))
 		return defects

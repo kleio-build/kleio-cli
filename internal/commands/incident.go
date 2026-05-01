@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -128,9 +129,9 @@ func buildIncidentEntries(
 	sinceTime time.Time,
 	repoName string,
 ) ([]engine.TimelineEntry, error) {
+	stats := engine.ComputeCorpusStats(ctx, store, repoName)
+	params := engine.DeriveParams(stats)
 	keywords := extractKeywords(signal)
-
-	var entries []engine.TimelineEntry
 
 	commits, err := store.QueryCommits(ctx, kleio.CommitFilter{
 		Since:    sinceTime.Format(time.RFC3339),
@@ -141,24 +142,50 @@ func buildIncidentEntries(
 		return nil, err
 	}
 
+	type scoredCommit struct {
+		commit kleio.Commit
+		score  float64
+	}
+	var scored []scoredCommit
 	for _, c := range commits {
-		score := scoreCommitForIncident(c, keywords, filePaths, sinceTime)
-		if score < 0.1 {
-			continue
+		score := scoreCommitForIncidentAdaptive(c, keywords, filePaths, sinceTime, params)
+		scored = append(scored, scoredCommit{commit: c, score: score})
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	topK := params.TopK
+	if topK > len(scored) {
+		topK = len(scored)
+	}
+
+	var entries []engine.TimelineEntry
+	lowRelevance := true
+	for i := 0; i < topK; i++ {
+		sc := scored[i]
+		if sc.score < params.ScoreFloor {
+			break
 		}
-		t, _ := time.Parse(time.RFC3339, c.CommittedAt)
+		if sc.score >= 0.2 {
+			lowRelevance = false
+		}
+		t, _ := time.Parse(time.RFC3339, sc.commit.CommittedAt)
 		if t.IsZero() {
-			t, _ = time.Parse("2006-01-02T15:04:05Z07:00", c.CommittedAt)
+			t, _ = time.Parse("2006-01-02T15:04:05Z07:00", sc.commit.CommittedAt)
 		}
 		entries = append(entries, engine.TimelineEntry{
 			Timestamp: t,
 			Kind:      kleio.SignalTypeGitCommit,
-			Summary:   firstLine(c.Message),
-			SHA:       c.SHA,
+			Summary:   firstLine(sc.commit.Message),
+			SHA:       sc.commit.SHA,
 		})
 	}
 
-	results, err := eng.Search(ctx, signal, 20)
+	_ = lowRelevance
+
+	results, err := eng.Search(ctx, signal, params.TopK)
 	if err == nil {
 		for _, r := range results {
 			if r.Kind == "event" {
@@ -200,8 +227,12 @@ func incidentReportToEntries(ir *IncidentReport) []engine.TimelineEntry {
 }
 
 func scoreCommitForIncident(c kleio.Commit, keywords, filePaths []string, sinceTime time.Time) float64 {
+	return scoreCommitForIncidentAdaptive(c, keywords, filePaths, sinceTime, engine.DefaultParams())
+}
+
+func scoreCommitForIncidentAdaptive(c kleio.Commit, keywords, filePaths []string, sinceTime time.Time, params engine.AdaptiveParams) float64 {
 	score := 0.0
-	score += 0.35 * engine.ExportRecencyScore(c.CommittedAt)
+	score += 0.35 * engine.RecencyScoreWithHalfLife(c.CommittedAt, params.RecencyHalfLife)
 
 	msg := strings.ToLower(c.Message)
 	for _, kw := range keywords {

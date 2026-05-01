@@ -52,7 +52,8 @@ func asciiSafe(s string) string {
 }
 
 // RenderPDF writes a PDF report directly (not via HTML).
-func RenderPDF(w io.Writer, r engine.Report, verbose bool) error {
+func RenderPDF(w io.Writer, r engine.Report, opts Options) error {
+	verbose := opts.Verbose
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(true, 15)
 	pdf.AddPage()
@@ -75,7 +76,7 @@ func RenderPDF(w io.Writer, r engine.Report, verbose bool) error {
 	pdf.Ln(4)
 
 	for _, sec := range sectionOrder(r.Command) {
-		renderPDFSection(pdf, sec, r)
+		renderPDFSection(pdf, sec, r, opts)
 	}
 
 	if len(r.NextSteps) > 0 {
@@ -114,7 +115,7 @@ func pdfSection(pdf *fpdf.Fpdf, title string) {
 	pdf.Ln(2)
 }
 
-func renderPDFSection(pdf *fpdf.Fpdf, sec string, r engine.Report) {
+func renderPDFSection(pdf *fpdf.Fpdf, sec string, r engine.Report, opts Options) {
 	switch sec {
 	case "decisions":
 		if len(r.Decisions) == 0 {
@@ -138,16 +139,22 @@ func renderPDFSection(pdf *fpdf.Fpdf, sec string, r engine.Report) {
 		}
 		heading := "Open Threads"
 		if r.Command == "explain" {
-			heading = "Review Risks"
+			heading = "Related Work"
 		}
 		pdfSection(pdf, heading)
-		pdf.SetFont("Times", "", 10)
-		for _, t := range r.OpenThreads {
-			suffix := ""
-			if t.Deferred {
-				suffix = " [deferred]"
+
+		useGroups := len(r.ThreadGroups) > 1
+		if useGroups {
+			for _, g := range r.ThreadGroups {
+				if g.PlanName != "" {
+					pdf.SetFont("Helvetica", "B", 11)
+					pdf.MultiCell(0, 6, asciiSafe(g.PlanName), "", "L", false)
+					pdf.Ln(1)
+				}
+				renderPDFThreadList(pdf, g.Threads, opts)
 			}
-			pdf.MultiCell(0, 5, asciiSafe(fmt.Sprintf("* %s (x%d)%s", t.Content, t.Occurrences, suffix)), "", "L", false)
+		} else {
+			renderPDFThreadList(pdf, r.OpenThreads, opts)
 		}
 		pdf.Ln(3)
 
@@ -179,5 +186,49 @@ func renderPDFSection(pdf *fpdf.Fpdf, sec string, r engine.Report) {
 			pdf.SetFont("Times", "", 10)
 		}
 		pdf.Ln(3)
+	}
+}
+
+func renderPDFThreadList(pdf *fpdf.Fpdf, threads []engine.ReportThread, opts Options) {
+	active, deferred := splitActiveDeferred(threads)
+
+	pdf.SetFont("Times", "", 10)
+	cap := opts.RenderCap
+	if opts.Verbose {
+		cap = len(active)
+	}
+	shown := 0
+	for i, t := range active {
+		if i >= cap {
+			break
+		}
+		pdf.MultiCell(0, 5, asciiSafe(fmt.Sprintf("* %s (x%d)", t.Content, t.Occurrences)), "", "L", false)
+		shown++
+	}
+	if remaining := len(active) - shown; remaining > 0 {
+		pdf.SetFont("Times", "I", 9)
+		pdf.MultiCell(0, 4, asciiSafe(fmt.Sprintf("... and %d more (use --verbose to see all)", remaining)), "", "L", false)
+	}
+
+	if len(deferred) > 0 {
+		pdf.SetFont("Helvetica", "I", 10)
+		pdf.MultiCell(0, 5, "Deferred:", "", "L", false)
+		pdf.SetFont("Times", "", 10)
+		deferCap := opts.DeferCap
+		if opts.Verbose {
+			deferCap = len(deferred)
+		}
+		dShown := 0
+		for i, t := range deferred {
+			if i >= deferCap {
+				break
+			}
+			pdf.MultiCell(0, 5, asciiSafe(fmt.Sprintf("* %s (x%d) [deferred]", t.Content, t.Occurrences)), "", "L", false)
+			dShown++
+		}
+		if remaining := len(deferred) - dShown; remaining > 0 {
+			pdf.SetFont("Times", "I", 9)
+			pdf.MultiCell(0, 4, asciiSafe(fmt.Sprintf("... and %d more deferred", remaining)), "", "L", false)
+		}
 	}
 }

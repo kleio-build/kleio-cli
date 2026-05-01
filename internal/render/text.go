@@ -8,7 +8,7 @@ import (
 )
 
 // RenderText writes a human-readable plain-text report to w.
-func RenderText(w io.Writer, r engine.Report, verbose bool) error {
+func RenderText(w io.Writer, r engine.Report, opts Options) error {
 	fmt.Fprintf(w, "=== %s Report: %s ===\n\n", capitalize(r.Command), r.Anchor)
 
 	if r.Enriched {
@@ -26,7 +26,7 @@ func RenderText(w io.Writer, r engine.Report, verbose bool) error {
 			}
 			fmt.Fprintln(w, "Decisions")
 			for _, d := range r.Decisions {
-				fmt.Fprintf(w, "  • %s\n", d.Content)
+				fmt.Fprintf(w, "  * %s\n", d.Content)
 				if d.Rationale != "" {
 					fmt.Fprintf(w, "    rationale: %s\n", d.Rationale)
 				}
@@ -39,16 +39,10 @@ func RenderText(w io.Writer, r engine.Report, verbose bool) error {
 			}
 			label := "Open Threads"
 			if r.Command == "explain" {
-				label = "Review Risks"
+				label = "Related Work"
 			}
 			fmt.Fprintln(w, label)
-			for _, t := range r.OpenThreads {
-				suffix := ""
-				if t.Deferred {
-					suffix = " [deferred]"
-				}
-				fmt.Fprintf(w, "  • %s (×%d)%s\n", t.Content, t.Occurrences, suffix)
-			}
+			renderTextThreads(w, r, opts)
 			fmt.Fprintln(w)
 
 		case "code_changes":
@@ -81,12 +75,12 @@ func RenderText(w io.Writer, r engine.Report, verbose bool) error {
 	if len(r.NextSteps) > 0 {
 		fmt.Fprintln(w, "Next Steps")
 		for _, s := range r.NextSteps {
-			fmt.Fprintf(w, "  → %s\n", s)
+			fmt.Fprintf(w, "  -> %s\n", s)
 		}
 		fmt.Fprintln(w)
 	}
 
-	if verbose && len(r.RawTimeline) > 0 {
+	if opts.Verbose && len(r.RawTimeline) > 0 {
 		fmt.Fprintln(w, "Raw Timeline")
 		for _, e := range r.RawTimeline {
 			ts := e.Timestamp.Format("2006-01-02 15:04")
@@ -96,6 +90,71 @@ func RenderText(w io.Writer, r engine.Report, verbose bool) error {
 	}
 
 	return nil
+}
+
+func renderTextThreads(w io.Writer, r engine.Report, opts Options) {
+	useGroups := len(r.ThreadGroups) > 1
+
+	if useGroups {
+		for _, g := range r.ThreadGroups {
+			if g.PlanName != "" {
+				fmt.Fprintf(w, "\n  -- %s --\n", g.PlanName)
+			}
+			renderTextThreadList(w, g.Threads, opts)
+		}
+	} else {
+		renderTextThreadList(w, r.OpenThreads, opts)
+	}
+}
+
+func renderTextThreadList(w io.Writer, threads []engine.ReportThread, opts Options) {
+	active, deferred := splitActiveDeferred(threads)
+
+	cap := opts.RenderCap
+	if opts.Verbose {
+		cap = len(active)
+	}
+	shown := 0
+	for i, t := range active {
+		if i >= cap {
+			break
+		}
+		fmt.Fprintf(w, "  * %s (x%d)\n", t.Content, t.Occurrences)
+		shown++
+	}
+	if remaining := len(active) - shown; remaining > 0 {
+		fmt.Fprintf(w, "  ... and %d more (use --verbose to see all)\n", remaining)
+	}
+
+	if len(deferred) > 0 {
+		fmt.Fprintln(w, "  Deferred:")
+		deferCap := opts.DeferCap
+		if opts.Verbose {
+			deferCap = len(deferred)
+		}
+		dShown := 0
+		for i, t := range deferred {
+			if i >= deferCap {
+				break
+			}
+			fmt.Fprintf(w, "  * %s (x%d) [deferred]\n", t.Content, t.Occurrences)
+			dShown++
+		}
+		if remaining := len(deferred) - dShown; remaining > 0 {
+			fmt.Fprintf(w, "  ... and %d more deferred\n", remaining)
+		}
+	}
+}
+
+func splitActiveDeferred(threads []engine.ReportThread) (active, deferred []engine.ReportThread) {
+	for _, t := range threads {
+		if t.Deferred {
+			deferred = append(deferred, t)
+		} else {
+			active = append(active, t)
+		}
+	}
+	return
 }
 
 func sectionOrder(command string) []string {

@@ -77,7 +77,7 @@ type htmlTimelineEntry struct {
 }
 
 // RenderHTML writes a standalone HTML report to w.
-func RenderHTML(w io.Writer, r engine.Report, verbose bool) error {
+func RenderHTML(w io.Writer, r engine.Report, opts Options) error {
 	tmpl, err := template.New("report").Parse(htmlTemplate)
 	if err != nil {
 		return err
@@ -90,7 +90,7 @@ func RenderHTML(w io.Writer, r engine.Report, verbose bool) error {
 		Enriched:     r.Enriched,
 		Subject:      r.Subject,
 		NextSteps:    r.NextSteps,
-		ShowTimeline: verbose && len(r.RawTimeline) > 0,
+		ShowTimeline: opts.Verbose && len(r.RawTimeline) > 0,
 		GeneratedAt:  r.GeneratedAt.Format("2006-01-02 15:04:05 UTC"),
 	}
 
@@ -103,7 +103,7 @@ func RenderHTML(w io.Writer, r engine.Report, verbose bool) error {
 	}
 
 	for _, sec := range sectionOrder(r.Command) {
-		html := renderHTMLSection(sec, r)
+		html := renderHTMLSection(sec, r, opts)
 		if html != "" {
 			data.Sections = append(data.Sections, template.HTML(html))
 		}
@@ -112,7 +112,7 @@ func RenderHTML(w io.Writer, r engine.Report, verbose bool) error {
 	return tmpl.Execute(w, data)
 }
 
-func renderHTMLSection(sec string, r engine.Report) string {
+func renderHTMLSection(sec string, r engine.Report, opts Options) string {
 	switch sec {
 	case "decisions":
 		if len(r.Decisions) == 0 {
@@ -134,20 +134,22 @@ func renderHTMLSection(sec string, r engine.Report) string {
 		}
 		heading := "Open Threads"
 		if r.Command == "explain" {
-			heading = "Review Risks"
+			heading = "Related Work"
 		}
-		s := fmt.Sprintf("<h2>%s</h2>\n<ul>\n", heading)
-		for _, t := range r.OpenThreads {
-			cls := ""
-			suffix := ""
-			if t.Deferred {
-				cls = ` class="deferred"`
-				suffix = " <em>[deferred]</em>"
+		s := fmt.Sprintf("<h2>%s</h2>\n", heading)
+
+		useGroups := len(r.ThreadGroups) > 1
+		if useGroups {
+			for _, g := range r.ThreadGroups {
+				if g.PlanName != "" {
+					s += fmt.Sprintf("<h3>%s</h3>\n", template.HTMLEscapeString(g.PlanName))
+				}
+				s += renderHTMLThreadList(g.Threads, opts)
 			}
-			s += fmt.Sprintf("<li%s>%s (×%d)%s</li>\n",
-				cls, template.HTMLEscapeString(t.Content), t.Occurrences, suffix)
+		} else {
+			s += renderHTMLThreadList(r.OpenThreads, opts)
 		}
-		return s + "</ul>\n"
+		return s
 
 	case "code_changes":
 		if len(r.CodeChanges) == 0 {
@@ -176,4 +178,50 @@ func renderHTMLSection(sec string, r engine.Report) string {
 		return s + "</ul>\n"
 	}
 	return ""
+}
+
+func renderHTMLThreadList(threads []engine.ReportThread, opts Options) string {
+	active, deferred := splitActiveDeferred(threads)
+	s := "<ul>\n"
+
+	cap := opts.RenderCap
+	if opts.Verbose {
+		cap = len(active)
+	}
+	shown := 0
+	for i, t := range active {
+		if i >= cap {
+			break
+		}
+		s += fmt.Sprintf("<li>%s (x%d)</li>\n",
+			template.HTMLEscapeString(t.Content), t.Occurrences)
+		shown++
+	}
+	if remaining := len(active) - shown; remaining > 0 {
+		s += fmt.Sprintf("<li class=\"note\">... and %d more (use --verbose to see all)</li>\n", remaining)
+	}
+	s += "</ul>\n"
+
+	if len(deferred) > 0 {
+		s += "<h4>Deferred</h4>\n<ul>\n"
+		deferCap := opts.DeferCap
+		if opts.Verbose {
+			deferCap = len(deferred)
+		}
+		dShown := 0
+		for i, t := range deferred {
+			if i >= deferCap {
+				break
+			}
+			s += fmt.Sprintf("<li class=\"deferred\">%s (x%d)</li>\n",
+				template.HTMLEscapeString(t.Content), t.Occurrences)
+			dShown++
+		}
+		if remaining := len(deferred) - dShown; remaining > 0 {
+			s += fmt.Sprintf("<li class=\"note\">... and %d more deferred</li>\n", remaining)
+		}
+		s += "</ul>\n"
+	}
+
+	return s
 }

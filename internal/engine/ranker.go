@@ -36,9 +36,10 @@ func ExportRecencyScore(ts string) float64 {
 	return recencyScore(ts)
 }
 
-// recencyScore returns a value in [0,1] decaying exponentially with age.
-// Half-life is 7 days.
-func recencyScore(ts string) float64 {
+// RecencyScoreWithHalfLife returns a [0,1] decay score with a configurable
+// half-life. Use this when adaptive parameters provide a corpus-specific
+// half-life instead of the fixed 7-day default.
+func RecencyScoreWithHalfLife(ts string, halfLife time.Duration) float64 {
 	t, err := time.Parse(time.RFC3339, ts)
 	if err != nil {
 		return 0
@@ -47,8 +48,17 @@ func recencyScore(ts string) float64 {
 	if hours < 0 {
 		hours = 0
 	}
-	halfLife := 7.0 * 24
-	return math.Exp(-0.693 * hours / halfLife)
+	hlHours := halfLife.Hours()
+	if hlHours <= 0 {
+		hlHours = 7.0 * 24
+	}
+	return math.Exp(-0.693 * hours / hlHours)
+}
+
+// recencyScore returns a value in [0,1] decaying exponentially with age.
+// Half-life is 7 days.
+func recencyScore(ts string) float64 {
+	return RecencyScoreWithHalfLife(ts, 7*24*time.Hour)
 }
 
 // keywordScore returns the fraction of query keywords found in text.
