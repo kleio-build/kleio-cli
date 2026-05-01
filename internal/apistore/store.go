@@ -321,6 +321,32 @@ func (s *Store) FileHistory(_ context.Context, _ string) ([]kleio.FileChange, er
 	return nil, fmt.Errorf("FileHistory is not supported in cloud mode")
 }
 
+// --- Entities (local-only) ---
+
+func (s *Store) CreateEntity(_ context.Context, _ *kleio.Entity) error {
+	return fmt.Errorf("CreateEntity is not supported in cloud mode")
+}
+
+func (s *Store) FindEntity(_ context.Context, _, _ string) (*kleio.Entity, error) {
+	return nil, fmt.Errorf("FindEntity is not supported in cloud mode")
+}
+
+func (s *Store) ListEntities(_ context.Context, _ kleio.EntityFilter) ([]kleio.Entity, error) {
+	return nil, fmt.Errorf("ListEntities is not supported in cloud mode")
+}
+
+func (s *Store) CreateEntityAlias(_ context.Context, _ *kleio.EntityAlias) error {
+	return fmt.Errorf("CreateEntityAlias is not supported in cloud mode")
+}
+
+func (s *Store) CreateEntityMention(_ context.Context, _ *kleio.EntityMention) error {
+	return fmt.Errorf("CreateEntityMention is not supported in cloud mode")
+}
+
+func (s *Store) FindEntitiesByEvidence(_ context.Context, _ string) ([]kleio.Entity, error) {
+	return nil, fmt.Errorf("FindEntitiesByEvidence is not supported in cloud mode")
+}
+
 // --- Search ---
 
 func (s *Store) Search(_ context.Context, query string, _ kleio.SearchOpts) ([]kleio.SearchResult, error) {

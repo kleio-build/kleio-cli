@@ -102,6 +102,78 @@ CREATE INDEX IF NOT EXISTS idx_links_type_source ON links(link_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_identifiers_kind ON identifiers(kind);
 CREATE INDEX IF NOT EXISTS idx_identifiers_value ON identifiers(value);
 
+CREATE TABLE IF NOT EXISTS entities (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    normalized_label TEXT NOT NULL,
+    repo_name       TEXT,
+    first_seen_at   TEXT NOT NULL,
+    last_seen_at    TEXT NOT NULL,
+    mention_count   INTEGER DEFAULT 1,
+    confidence      REAL DEFAULT 0.5
+);
+CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
+CREATE INDEX IF NOT EXISTS idx_entities_normalized ON entities(normalized_label);
+
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    entity_id       TEXT NOT NULL REFERENCES entities(id),
+    alias           TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    confidence      REAL NOT NULL,
+    created_at      TEXT NOT NULL,
+    UNIQUE(entity_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias);
+
+CREATE TABLE IF NOT EXISTS entity_mentions (
+    id              TEXT PRIMARY KEY,
+    entity_id       TEXT NOT NULL REFERENCES entities(id),
+    evidence_type   TEXT NOT NULL,
+    evidence_id     TEXT NOT NULL,
+    mention_context TEXT,
+    confidence      REAL NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity ON entity_mentions(entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_evidence ON entity_mentions(evidence_id);
+
+CREATE TABLE IF NOT EXISTS code_symbols (
+    id              TEXT PRIMARY KEY,
+    repo_name       TEXT NOT NULL,
+    file_path       TEXT NOT NULL,
+    symbol_name     TEXT NOT NULL,
+    symbol_kind     TEXT NOT NULL,
+    start_line      INTEGER,
+    end_line        INTEGER,
+    language        TEXT NOT NULL,
+    last_commit_sha TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_code_symbols_repo_file ON code_symbols(repo_name, file_path);
+
+CREATE TABLE IF NOT EXISTS commit_symbol_changes (
+    commit_sha      TEXT NOT NULL,
+    symbol_id       TEXT NOT NULL REFERENCES code_symbols(id),
+    change_kind     TEXT NOT NULL,
+    lines_added     INTEGER,
+    lines_deleted   INTEGER,
+    PRIMARY KEY (commit_sha, symbol_id)
+);
+
+CREATE TABLE IF NOT EXISTS derived_edges (
+    id                TEXT PRIMARY KEY,
+    source_entity_id  TEXT NOT NULL,
+    predicate         TEXT NOT NULL,
+    target_entity_id  TEXT NOT NULL,
+    rule_name         TEXT NOT NULL,
+    confidence        REAL NOT NULL,
+    evidence_count    INTEGER DEFAULT 1,
+    generated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_derived_edges_source ON derived_edges(source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_derived_edges_target ON derived_edges(target_entity_id);
+CREATE INDEX IF NOT EXISTS idx_derived_edges_predicate ON derived_edges(predicate);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
     event_id UNINDEXED, content, freeform_context
 );

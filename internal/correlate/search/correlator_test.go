@@ -50,6 +50,18 @@ func (f *fakeStore) TrackFileChange(context.Context, *kleio.FileChange) error { 
 func (f *fakeStore) FileHistory(context.Context, string) ([]kleio.FileChange, error) {
 	return nil, nil
 }
+func (f *fakeStore) CreateEntity(context.Context, *kleio.Entity) error   { return nil }
+func (f *fakeStore) FindEntity(context.Context, string, string) (*kleio.Entity, error) {
+	return nil, nil
+}
+func (f *fakeStore) ListEntities(context.Context, kleio.EntityFilter) ([]kleio.Entity, error) {
+	return nil, nil
+}
+func (f *fakeStore) CreateEntityAlias(context.Context, *kleio.EntityAlias) error   { return nil }
+func (f *fakeStore) CreateEntityMention(context.Context, *kleio.EntityMention) error { return nil }
+func (f *fakeStore) FindEntitiesByEvidence(context.Context, string) ([]kleio.Entity, error) {
+	return nil, nil
+}
 func (f *fakeStore) Mode() kleio.StoreMode { return kleio.StoreModeLocal }
 func (f *fakeStore) Close() error          { return nil }
 

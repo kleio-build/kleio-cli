@@ -47,6 +47,18 @@ func (stubStore) FileHistory(context.Context, string) ([]kleio.FileChange, error
 func (stubStore) Search(context.Context, string, kleio.SearchOpts) ([]kleio.SearchResult, error) {
 	return nil, nil
 }
+func (stubStore) CreateEntity(context.Context, *kleio.Entity) error   { return nil }
+func (stubStore) FindEntity(context.Context, string, string) (*kleio.Entity, error) {
+	return nil, nil
+}
+func (stubStore) ListEntities(context.Context, kleio.EntityFilter) ([]kleio.Entity, error) {
+	return nil, nil
+}
+func (stubStore) CreateEntityAlias(context.Context, *kleio.EntityAlias) error   { return nil }
+func (stubStore) CreateEntityMention(context.Context, *kleio.EntityMention) error { return nil }
+func (stubStore) FindEntitiesByEvidence(context.Context, string) ([]kleio.Entity, error) {
+	return nil, nil
+}
 func (stubStore) Mode() kleio.StoreMode { return kleio.StoreModeLocal }
 func (stubStore) Close() error          { return nil }
 
